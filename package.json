@@ -1,5 +1,5 @@
 {
-  "name": "claude-kit-tests",
+  "name": "clanker-kit-tests",
   "private": true,
   "scripts": {
     "test": "bun test tests/static tests/stories tests/fixtures tests/utils",

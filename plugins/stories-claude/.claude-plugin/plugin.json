@@ -5,8 +5,8 @@
   "author": {
     "name": "shousper"
   },
-  "homepage": "https://github.com/shousper/claude-kit",
-  "repository": "https://github.com/shousper/claude-kit",
+  "homepage": "https://github.com/shousper/clanker-kit",
+  "repository": "https://github.com/shousper/clanker-kit",
   "license": "MIT",
   "keywords": ["stories", "workflow", "kanban", "autonomous", "gates"],
   "dependencies": [{ "name": "kit", "version": "^1.2.0" }]

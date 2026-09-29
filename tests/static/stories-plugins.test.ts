@@ -28,10 +28,10 @@ const OMP_TOKEN = /(^|[^a-z])omp([^a-z]|$)/i;
 // Claude env prefix, and the Claude workflow launch.
 const HARNESS_PROTOCOL = /CLAUDE_|hookSpecificOutput|permissionDecision|systemMessage|TaskOutput|Workflow\(/;
 const LEGACY_ALLOWED = new Set(["lib/util.mjs", "lib/doctor.mjs"]);
-// The OMP plugin's own files may name Claude only in these two literals: the
-// pre-split marker the extension still recognises (design: adapters keep injecting
-// the rules on a legacy layout) and the repository URL in its manifest.
-const OMP_CLAUDE_ALLOWED = [".claude/story-workflow.json", "github.com/shousper/claude-kit"];
+// The OMP plugin's own files may name Claude only in the pre-split marker the
+// extension still recognises (design: adapters keep injecting the rules on a
+// legacy layout).
+const OMP_CLAUDE_ALLOWED = [".claude/story-workflow.json"];
 
 describe("shared/stories", () => {
   it("carries no harness protocol string in lib, bin, or skills", () => {
