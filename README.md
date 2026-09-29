@@ -1,6 +1,6 @@
-# claude-kit
+# clanker-kit
 
-A Claude Code plugin marketplace hosting three plugins:
+A plugin marketplace for Claude Code and OMP hosting three plugins:
 
 - **`kit`** (`plugins/kit-claude/`, `plugins/kit-omp/`) — a complete development workflow, from brainstorming ideas through design, implementation, code review, and branch completion.
 - **`stories`** (`plugins/stories-claude/`, `plugins/stories-omp/`) — a story-based autonomous workflow built on kit: a repo-native markdown story board with typed verification gates and a goal loop that works the board until it is drained. Each plugin's README covers its harness; the shared guide is [shared/stories/README.md](shared/stories/README.md).
@@ -14,7 +14,7 @@ The remainder of this README documents `kit`.
 
 ```bash
 # Add the marketplace
-/plugin marketplace add shousper/claude-kit
+/plugin marketplace add shousper/clanker-kit
 
 # Install the core workflow plugin
 /plugin install kit@shousper-kit

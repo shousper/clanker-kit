@@ -7,7 +7,7 @@ Requires the `kit` plugin: each story is implemented via kit:build-flow.
 ## Install
 
 ```bash
-/plugin marketplace add shousper/claude-kit
+/plugin marketplace add shousper/clanker-kit
 /plugin install kit@shousper-kit
 /plugin install stories@shousper-kit
 ```
