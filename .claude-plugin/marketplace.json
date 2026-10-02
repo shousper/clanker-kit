@@ -8,7 +8,7 @@
     {
       "name": "kit",
       "description": "Skills, hooks, and agents for a review-first development workflow",
-      "version": "1.4.2",
+      "version": "1.5.0",
       "source": "./plugins/kit-claude"
     },
     {

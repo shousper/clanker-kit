@@ -1,7 +1,11 @@
 {
   "hooks": {
+    "PreToolUse": [
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/standards-check.sh" }] }
+    ],
     "PostToolUse": [
-      { "matcher": "Write|Edit", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/record.sh" }] }
+      { "matcher": "Write|Edit", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/record.sh" }] },
+      { "matcher": "Read", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/standards-seen.sh" }] }
     ],
     "Stop": [
       { "matcher": "", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/format-on-stop.sh" }] }
@@ -11,7 +15,8 @@
     ],
     "SessionStart": [
       { "matcher": "startup|resume|clear|compact", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh", "async": false }] },
-      { "matcher": "startup|resume", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hcl-detect.sh" }] }
+      { "matcher": "startup|resume", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hcl-detect.sh" }] },
+      { "matcher": "clear|compact", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/standards-reset.sh" }] }
     ]
   }
 }

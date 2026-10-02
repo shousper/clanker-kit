@@ -1,4 +1,4 @@
-import type { Harness, NormalizedEvent, RunOptions } from "./types";
+import { contentText, toolSucceeded, type Harness, type NormalizedEvent, type RunOptions } from "./types";
 import { KIT_OMP_ROOT } from "../paths";
 
 /** Exact, provider-qualified id. `--model sonnet` fuzzy-matches the dead claude-sonnet-4-0
@@ -32,6 +32,11 @@ export const omp: Harness = {
     // never injects the using-kit governance block. Evaluating with `--plugin-dir` would
     // measure a configuration we don't ship and under-report activation.
     for (const dir of options.pluginDirs ?? []) args.push("-e", dir);
+    // Skills come from the plugin OMP has installed, not from the `-e` directory. While the
+    // linked install still points at a checkout that has the retired code-standards skill,
+    // agents load it, chase its unreachable `../..` table, and time out before editing.
+    // Excluding it models the shipped plugin; the flag is a no-op once no install has it.
+    args.push("--skills", "!code-standards");
     // OMP has no --max-turns; bound wall-clock instead. Scaled so omp self-terminates at
     // the same budget the runner enforces, rather than being killed during startup.
     if (options.timeout) {
@@ -48,6 +53,13 @@ export const omp: Harness = {
   parse(stdout) {
     const out: NormalizedEvent[] = [];
     const seen = new Set<string>();
+    const seenResults = new Set<string>();
+    const pushResult = (message: { toolCallId?: unknown; isError?: unknown; content?: unknown } | undefined) => {
+      const id = typeof message?.toolCallId === "string" ? message.toolCallId : "";
+      if (!id || seenResults.has(id)) return;
+      seenResults.add(id);
+      out.push({ kind: "tool_result", id, isError: message?.isError === true, text: contentText(message?.content) });
+    };
     for (const ev of parseLines(stdout) as any[]) {
       if (ev.type === "retry_fallback_applied") {
         out.push({ kind: "fallback", from: String(ev.from), to: String(ev.to) });
@@ -58,6 +70,14 @@ export const omp: Harness = {
         continue;
       }
       if (ev.type !== "message_end" && ev.type !== "turn_end") continue;
+      // Only the assistant's own blocks are calls and prose. A toolResult message is tool
+      // output: record it as a result keyed by the call it answers, never as `text`. The
+      // user's prompt is not the assistant speaking either.
+      if (ev.message?.role === "toolResult") {
+        pushResult(ev.message);
+        continue;
+      }
+      if (ev.message?.role === "user") continue;
       for (const b of ev.message?.content ?? []) {
         if (b.type === "toolCall") {
           if (b.id && seen.has(b.id)) continue;
@@ -67,15 +87,19 @@ export const omp: Harness = {
           out.push({ kind: "text", text: b.text ?? "" });
         }
       }
+      // turn_end repeats the turn's results; it is the only copy if message_end was missed.
+      if (ev.type === "turn_end") for (const r of ev.toolResults ?? []) pushResult(r);
     }
     return out;
   },
 
   skillActivationSignal(events, skill) {
     const bare = skill.includes(":") ? skill.split(":")[1] : skill;
+    // A failed read (`skill://x/../../y` collapses to a missing path) is not an activation.
     return events.some(
       (e) => e.kind === "tool_call" && e.tool === "read" &&
-        String(e.input.path ?? "").replace(/^skill:\/\//, "").split("/")[0] === bare,
+        String(e.input.path ?? "").replace(/^skill:\/\//, "").split("/")[0] === bare &&
+        toolSucceeded(events, e),
     );
   },
 };

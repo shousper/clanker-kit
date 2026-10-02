@@ -1,15 +1,17 @@
 /**
  * Detects whether a live agent activated a given skill from a harness's normalized
  * events. The harness-specific signal (a `Skill` tool call for Claude, a `skill://`
- * read for OMP) lives in the adapter; this module owns the shared policy: try the
- * adapter's signal, fall back to scanning `text` events for the qualified name, and
- * flag runs where a silent model fallback makes the result untrustworthy.
+ * read for OMP) lives in the adapter and counts only calls whose result is not an
+ * error; this module owns the shared policy: try the adapter's signal, fall back to
+ * scanning `text` events (assistant prose only; adapters never emit tool output as
+ * `text`) for the qualified name, and flag runs where a silent model fallback makes
+ * the result untrustworthy.
  *
  * Skill keys may be bare kit names ("tdd") or plugin-namespaced ("stories:work").
  * Bare names belong to the kit plugin.
  */
 
-import type { Harness, NormalizedEvent } from "./harness/types";
+import { resultFor, type Harness, type NormalizedEvent, type ToolCallEvent } from "./harness/types";
 
 export interface ActivationCheck {
   activated: boolean;
@@ -27,8 +29,8 @@ function skillNames(skill: string): { qualified: string; bare: string } {
 
 function describeToolCalls(events: NormalizedEvent[]): string {
   const calls = events
-    .filter((e): e is Extract<NormalizedEvent, { kind: "tool_call" }> => e.kind === "tool_call")
-    .map((e) => `${e.tool}(${JSON.stringify(e.input).slice(0, 80)})`);
+    .filter((e): e is ToolCallEvent => e.kind === "tool_call")
+    .map((e) => `${e.tool}(${JSON.stringify(e.input).slice(0, 80)})${resultFor(events, e)?.isError ? " [failed]" : ""}`);
   return calls.length > 0 ? `Tools called: ${calls.join(", ")}` : "No tool calls found";
 }
 

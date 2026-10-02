@@ -1,7 +1,7 @@
 {
   "name": "kit",
   "description": "A review-first development workflow for OMP: skills, hooks, and code standards, plus a staged build-flow that implements a plan batch by batch with independent spec and quality review gates before every change lands.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "author": {
     "name": "shousper"
   },

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { homedir } from "node:os";
+import { readdirSync, statSync, unlinkSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 /**
@@ -72,6 +73,31 @@ export function buildFormatCommand(pluginRoot: string, files: readonly string[])
   return [resolve(pluginRoot, "hooks/format-files.sh"), ...files];
 }
 
+/** A full read of a standards file: bare `CLAUDE.md` basename, optionally with
+ *  the `:raw` read selector. Line-range selectors are partial reads and do
+ *  not count. */
+const STANDARDS_FILE_PATH = /(^|\/)CLAUDE\.md(:raw)?$/;
+
+const STALE_STATE_MS = 2 * 24 * 60 * 60 * 1000;
+
+/** Removes `standards-*.txt` gate state older than two days. Mirrors
+ *  `find -mtime +1`, which compares whole 24-hour periods. */
+function pruneStaleStandards(stateDir: string, now = Date.now()): void {
+  try {
+    for (const name of readdirSync(stateDir)) {
+      if (!/^standards-.*\.txt$/.test(name)) continue;
+      const file = resolve(stateDir, name);
+      try {
+        if (statSync(file).mtimeMs <= now - STALE_STATE_MS) unlinkSync(file);
+      } catch {
+        // A concurrent cleanup or malformed state entry must not stall a session.
+      }
+    }
+  } catch {
+    // A missing or inaccessible state directory is harmless.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Handler factory — injected deps make this testable without an OMP runtime
 // ---------------------------------------------------------------------------
@@ -84,6 +110,7 @@ export interface ExecResult {
 
 export interface ExecOpts {
   cwd: string;
+  env?: Record<string, string>;
 }
 
 export type ExecFn = (command: string, args: string[], opts: ExecOpts) => Promise<ExecResult>;
@@ -113,9 +140,18 @@ export interface ToolResultLike {
   isError?: boolean;
 }
 
+export interface ToolCallLike {
+  toolName: string;
+  input?: Record<string, unknown>;
+}
+
+export type ToolCallResult = { block: true; reason: string } | undefined;
+
 export interface HookHandlers {
   sessionStart(event: unknown, ctx?: MinimalHookContext): Promise<void>;
+  toolCall(event: ToolCallLike, ctx?: MinimalHookContext): Promise<ToolCallResult>;
   toolResult(event: ToolResultLike, ctx?: MinimalHookContext): Promise<void>;
+  sessionCompact(event: unknown, ctx?: MinimalHookContext): Promise<void>;
   sessionStop(event: unknown, ctx?: MinimalHookContext): Promise<void>;
   agentEnd(event: unknown, ctx?: MinimalHookContext): Promise<void>;
 }
@@ -157,13 +193,29 @@ export function createHandlers(
   };
 
   const cwdFor = (ctx?: MinimalHookContext) => ctx?.cwd ?? process.cwd();
+  const sessionKeyFor = (ctx?: MinimalHookContext) => ctx?.sessionManager?.getSessionId() ?? "default";
+  const gateScript = resolve(pluginRoot, "hooks/standards-gate.sh");
+  const runGate = (args: string[], ctx?: MinimalHookContext): Promise<ExecResult> =>
+    deps.exec(gateScript, args, {
+      cwd: cwdFor(ctx),
+      env: { KIT_SCRATCH_KEY: sessionKeyFor(ctx) },
+    });
+  const markStandardsRead = async (event: ToolResultLike, ctx?: MinimalHookContext): Promise<void> => {
+    const path = event.input?.path;
+    if (event.toolName !== "read" || typeof path !== "string" || !STANDARDS_FILE_PATH.test(path)) return;
+    try {
+      await runGate(["seen", isAbsolute(path) ? path : resolve(cwdFor(ctx), path)], ctx);
+    } catch {
+      // Failing to record a read only means the gate asks once more.
+    }
+  };
 
   return {
     async sessionStart(_event, ctx) {
       try {
         const cwd = cwdFor(ctx);
         const scriptPath = resolve(pluginRoot, "hooks/session-context.sh");
-        const result = await deps.exec(scriptPath, [cwd], { cwd });
+        const result = await deps.exec(scriptPath, [], { cwd });
         const context = result.stdout.trim();
         if (context) deps.sendMessage(context);
       } catch {
@@ -171,20 +223,41 @@ export function createHandlers(
       }
     },
 
+    async toolCall(event, ctx) {
+      try {
+        for (const path of collectEditedPaths(event.toolName, event.input, cwdFor(ctx))) {
+          const result = await runGate(["check", path], ctx);
+          if (result.code === 2) return { block: true, reason: result.stdout.trim() };
+        }
+      } catch {
+        // A gate failure must never stall an edit.
+      }
+      return undefined;
+    },
+
     async toolResult(event, ctx) {
       if (event.isError) return;
+      await markStandardsRead(event, ctx);
       const paths = collectEditedPaths(event.toolName, event.input, cwdFor(ctx));
       if (paths.length === 0) return;
-      const files = filesFor(ctx?.sessionManager?.getSessionId() ?? "default");
+      const files = filesFor(sessionKeyFor(ctx));
       for (const path of paths) files.add(path);
     },
 
+    async sessionCompact(_event, ctx) {
+      try {
+        await runGate(["reset"], ctx);
+      } catch {
+        // A gate failure must never stall the session.
+      }
+    },
+
     async sessionStop(_event, ctx) {
-      await flushFormat(ctx?.sessionManager?.getSessionId() ?? "default", cwdFor(ctx));
+      await flushFormat(sessionKeyFor(ctx), cwdFor(ctx));
     },
 
     async agentEnd(_event, ctx) {
-      await flushFormat(ctx?.sessionManager?.getSessionId() ?? "default", cwdFor(ctx));
+      await flushFormat(sessionKeyFor(ctx), cwdFor(ctx));
     },
   };
 }
@@ -201,7 +274,7 @@ function buildExec(env: Record<string, string>): ExecFn {
   return async (command, args, opts) => {
     const proc = Bun.spawn([command, ...args], {
       cwd: opts.cwd,
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...env, ...(opts.env ?? {}) },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -235,10 +308,15 @@ export function registerHooks(pi: ExtensionAPI, pluginRoot: string): void {
     );
 
   pi.on("session_start", async (event, ctx) => {
+    pruneStaleStandards(scriptEnv.KIT_STATE_DIR);
     await handlersFor(ctx).sessionStart(event, ctx);
   });
+  pi.on("tool_call", async (event, ctx) => handlersFor(ctx).toolCall(event as unknown as ToolCallLike, ctx));
   pi.on("tool_result", async (event, ctx) => {
     await handlersFor(ctx).toolResult(event, ctx);
+  });
+  pi.on("session_compact" as never, async (event: unknown, ctx: ExtensionContext) => {
+    await handlersFor(ctx).sessionCompact(event, ctx);
   });
   pi.on("session_stop", async (event, ctx) => {
     await handlersFor(ctx).sessionStop(event, ctx);

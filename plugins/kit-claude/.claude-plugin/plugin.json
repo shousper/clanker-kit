@@ -1,7 +1,7 @@
 {
   "name": "kit",
   "description": "Personal Claude Code toolkit - skills, commands, hooks, and agents",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "author": {
     "name": "shousper"
   },

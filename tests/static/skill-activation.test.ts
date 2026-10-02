@@ -8,9 +8,11 @@ import { ROOT } from "../utils/paths";
 
 const CLAUDE_FIXTURE = readFileSync(resolve(ROOT, "tests/fixtures/events/claude-skill-activation.jsonl"), "utf-8");
 const OMP_FIXTURE = readFileSync(resolve(ROOT, "tests/fixtures/events/omp-skill-activation.jsonl"), "utf-8");
+const OMP_FAILED_READ_FIXTURE = readFileSync(resolve(ROOT, "tests/fixtures/events/omp-failed-read.jsonl"), "utf-8");
 
 interface ContentBlock {
   type: string;
+  id?: string;
   name?: string;
   input?: Record<string, unknown>;
   text?: string;
@@ -18,6 +20,26 @@ interface ContentBlock {
 
 function streamLine(block: ContentBlock): string {
   return JSON.stringify({ type: "assistant", message: { content: [block] } });
+}
+
+/** A Claude `Skill` tool call and the user event carrying its outcome. */
+function skillCallStream(skill: string, outcome: { isError: boolean } = { isError: false }): string {
+  return [
+    streamLine({ type: "tool_use", id: "toolu_1", name: "Skill", input: { skill } }),
+    JSON.stringify({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            is_error: outcome.isError,
+            content: outcome.isError ? `Unknown skill: ${skill}` : `Launching skill: ${skill}`,
+          },
+        ],
+      },
+    }),
+  ].join("\n");
 }
 
 describe("checkSkillActivation", () => {
@@ -34,22 +56,22 @@ describe("checkSkillActivation", () => {
   });
 
   it("matches a bare kit skill invoked bare", () => {
-    const out = streamLine({ type: "tool_use", name: "Skill", input: { skill: "tdd" } });
+    const out = skillCallStream("tdd");
     expect(checkSkillActivation(claude, out, "tdd").activated).toBe(true);
   });
 
   it("matches a bare kit skill invoked namespaced", () => {
-    const out = streamLine({ type: "tool_use", name: "Skill", input: { skill: "kit:tdd" } });
+    const out = skillCallStream("kit:tdd");
     expect(checkSkillActivation(claude, out, "tdd").activated).toBe(true);
   });
 
   it("matches a namespaced stories skill invoked namespaced", () => {
-    const out = streamLine({ type: "tool_use", name: "Skill", input: { skill: "stories:work" } });
+    const out = skillCallStream("stories:work");
     expect(checkSkillActivation(claude, out, "stories:work").activated).toBe(true);
   });
 
   it("matches a namespaced stories skill invoked bare", () => {
-    const out = streamLine({ type: "tool_use", name: "Skill", input: { skill: "work" } });
+    const out = skillCallStream("work");
     expect(checkSkillActivation(claude, out, "stories:work").activated).toBe(true);
   });
 
@@ -64,7 +86,7 @@ describe("checkSkillActivation", () => {
   });
 
   it("does not match a different skill", () => {
-    const out = streamLine({ type: "tool_use", name: "Skill", input: { skill: "stories:plan" } });
+    const out = skillCallStream("stories:plan");
     expect(checkSkillActivation(claude, out, "stories:work").activated).toBe(false);
   });
 
@@ -78,5 +100,29 @@ describe("checkSkillActivation", () => {
   it("invalidates a run that silently changed model", () => {
     const stdout = '{"type":"retry_fallback_applied","from":"anthropic/claude-sonnet-4-5","to":"xai-oauth/grok-build"}';
     expect(checkSkillActivation(omp, stdout, "tdd").invalid).toBe(true);
+  });
+
+  it("does not count a Skill call that returned an error", () => {
+    const out = skillCallStream("kit:tdd", { isError: true });
+    expect(checkSkillActivation(claude, out, "tdd").activated).toBe(false);
+  });
+
+  it("does not count a Skill call the run never got a result for", () => {
+    const out = streamLine({ type: "tool_use", id: "toolu_1", name: "Skill", input: { skill: "kit:tdd" } });
+    expect(checkSkillActivation(claude, out, "tdd").activated).toBe(false);
+  });
+
+  it("does not count a failed skill:// read on omp, and names the failure in the details", () => {
+    const result = checkSkillActivation(omp, OMP_FAILED_READ_FIXTURE, "code-standards");
+    expect(result.activated).toBe(false);
+    expect(result.details).toContain("[failed]");
+  });
+
+  it("text fallback ignores tool output that merely mentions the skill", () => {
+    const out = [
+      JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "/tmp/notes.md" } }] } }),
+      JSON.stringify({ type: "message_end", message: { role: "toolResult", toolCallId: "t1", toolName: "read", isError: false, content: [{ type: "text", text: "remember to load kit:tdd first" }] } }),
+    ].join("\n");
+    expect(checkSkillActivation(omp, out, "tdd").activated).toBe(false);
   });
 });

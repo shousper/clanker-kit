@@ -70,8 +70,8 @@ describe("plugins/kit-omp/omp/hooks.ts", () => {
     expect(source).not.toMatch(/hook-?[Bb]ridge/);
   });
 
-  it("carries no Claude harness protocol (stdin JSON, hookSpecificOutput, CLAUDE_ env vars)", () => {
-    expect(source).not.toMatch(/claude/i);
+  it("carries no Claude hook protocol", () => {
+    expect(source).not.toMatch(/CLAUDE_|\.claude(?:-|\/|$)/);
     expect(source).not.toMatch(/hookSpecificOutput|systemMessage|permissionDecision|suppressOutput/);
   });
 });

@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { readdirSync, existsSync } from "fs";
-import { readFile } from "fs/promises";
 import { resolve } from "path";
 import { parseSkill, type ParsedSkill } from "../utils/skill-parser";
-import { SKILLS_DIR, STORIES_SKILLS_DIR, STORIES_ROOTS, KIT_CLAUDE_ROOT, KIT_OMP_ROOT, WRITING_SKILLS_DIR } from "../utils/paths";
+import { SKILLS_DIR, STORIES_SKILLS_DIR, WRITING_SKILLS_DIR } from "../utils/paths";
 
 const PLUGIN_SKILL_ROOTS: Record<string, string> = {
   kit: SKILLS_DIR,
@@ -99,42 +98,6 @@ describe("skill cross-references", () => {
           namesByNs[ref.ns]?.has(ref.name),
           `${e.key} references ${ref.ns}:${ref.name}`,
         ).toBe(true);
-      }
-    }
-  });
-});
-
-describe("skill companion files", () => {
-  it("all referenced .md files exist on disk", async () => {
-    for (const e of entries) {
-      const content = await readFile(resolve(e.path, "SKILL.md"), "utf-8");
-      // Strip fenced code blocks to avoid matching example references
-      const stripped = content.replace(/```[\s\S]*?```/g, "");
-      const refs = new Set<string>();
-      // Match backtick-quoted local .md refs: `./file.md`, `file.md`, `subdir/file.md`
-      for (const m of stripped.matchAll(/`(\.\/)?([a-z][\w./-]*\.md)`/g)) refs.add(m[2]);
-      // Match @file.md references (simple filenames only)
-      for (const m of stripped.matchAll(/@([a-z][\w-]*\.md)\b/g)) refs.add(m[1]);
-      // Match plain-text "see file.md" style references (simple filenames only)
-      for (const m of stripped.matchAll(/(?:see |See |\*\*)`?([a-z][\w-]*\.md)`?\*?\*?/g)) refs.add(m[1]);
-      // Normalize paths: strip skill dir prefix (e.g. `code-review/dispatch-template.md` -> `dispatch-template.md`)
-      const normalized = new Set<string>();
-      for (const ref of refs) {
-        if (ref === "SKILL.md" || ref === "CLAUDE.md") continue;
-        const local = ref.startsWith(`${e.dir}/`) ? ref.slice(e.dir.length + 1) : ref;
-        // Skip cross-skill deep paths (still contain /)
-        if (local.includes("/")) continue;
-        normalized.add(local);
-      }
-      for (const ref of normalized) {
-        if (ref === "launch.md" && (e.ns === "kit" || e.ns === "stories")) {
-          const roots = e.ns === "kit" ? { claude: KIT_CLAUDE_ROOT, omp: KIT_OMP_ROOT } : STORIES_ROOTS;
-          for (const [harness, root] of Object.entries(roots)) {
-            expect(existsSync(resolve(root, "skills", e.dir, ref)), `${e.key} -> ${ref} (${harness})`).toBe(true);
-          }
-          continue;
-        }
-        expect(existsSync(resolve(e.path, ref)), `${e.key} -> ${ref}`).toBe(true);
       }
     }
   });

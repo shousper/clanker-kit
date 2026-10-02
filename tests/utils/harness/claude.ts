@@ -1,4 +1,4 @@
-import type { Harness, NormalizedEvent, RunOptions } from "./types";
+import { contentText, toolSucceeded, type Harness, type NormalizedEvent, type RunOptions } from "./types";
 import { KIT_CLAUDE_ROOT } from "../paths";
 
 /** Claude Code's own alias resolution is reliable; only OMP's fuzzy match is not. */
@@ -10,11 +10,19 @@ interface ClaudeContentBlock {
   input?: Record<string, unknown>;
   id?: string;
   text?: string;
+  tool_use_id?: string;
+  is_error?: boolean;
+  content?: unknown;
 }
 
 interface ClaudeAssistantEvent {
   type: "assistant";
   message?: { content?: ClaudeContentBlock[] };
+}
+
+interface ClaudeUserEvent {
+  type: "user";
+  message?: { content?: ClaudeContentBlock[] | string };
 }
 
 interface ClaudeResultEvent {
@@ -26,6 +34,10 @@ interface ClaudeResultEvent {
 
 function isAssistantEvent(value: unknown): value is ClaudeAssistantEvent {
   return typeof value === "object" && value !== null && "type" in value && value.type === "assistant";
+}
+
+function isUserEvent(value: unknown): value is ClaudeUserEvent {
+  return typeof value === "object" && value !== null && "type" in value && value.type === "user";
 }
 
 function isResultEvent(value: unknown): value is ClaudeResultEvent {
@@ -66,6 +78,17 @@ export const claude: Harness = {
         out.push({ kind: "error", message: parsed.result || `claude run failed (${parsed.subtype ?? "unknown"})` });
         continue;
       }
+      if (isUserEvent(parsed)) {
+        // Tool outcomes arrive as user-role events. Their text blocks (synthetic skill
+        // bodies, reminders) are not assistant prose and are not emitted as `text`.
+        const blocks = parsed.message?.content;
+        for (const block of Array.isArray(blocks) ? blocks : []) {
+          if (block.type === "tool_result" && block.tool_use_id) {
+            out.push({ kind: "tool_result", id: block.tool_use_id, isError: block.is_error === true, text: contentText(block.content) });
+          }
+        }
+        continue;
+      }
       if (!isAssistantEvent(parsed)) continue;
       for (const block of parsed.message?.content ?? []) {
         if (block.type === "tool_use" && block.name) {
@@ -83,7 +106,8 @@ export const claude: Harness = {
     return events.some((e) => {
       if (e.kind !== "tool_call" || e.tool !== "Skill") return false;
       const used = String(e.input.skill ?? "").trim();
-      return used === skill || used === bare || used.split(":").pop() === bare;
+      // An unknown skill returns an error result and loads nothing.
+      return (used === skill || used === bare || used.split(":").pop() === bare) && toolSucceeded(events, e);
     });
   },
 };

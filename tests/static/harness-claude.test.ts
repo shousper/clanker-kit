@@ -38,4 +38,35 @@ describe("claude adapter", () => {
       message: "Error: tool execution failed after 3 retries",
     });
   });
+
+  it("emits the tool_result for a call from the following user event", () => {
+    const results = claude.parse(FIXTURE).filter((e) => e.kind === "tool_result");
+    expect(results).toEqual([
+      { kind: "tool_result", id: "toolu_017M7BF91nmd5syodfHasisE", isError: false, text: "Launching skill: kit:tdd" },
+    ]);
+  });
+
+  it("flags is_error results and flattens block-array content", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_blocked",
+            is_error: true,
+            content: [{ type: "text", text: "kit: before editing main.go, read the Go standards." }],
+          },
+        ],
+      },
+    });
+    expect(claude.parse(line)).toEqual([
+      { kind: "tool_result", id: "toolu_blocked", isError: true, text: "kit: before editing main.go, read the Go standards." },
+    ]);
+  });
+
+  it("does not emit user-role text blocks as assistant text", () => {
+    expect(claude.parse(FIXTURE).some((e) => e.kind === "text" && e.text.includes("Base directory for this skill"))).toBe(false);
+  });
 });

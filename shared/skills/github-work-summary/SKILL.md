@@ -44,9 +44,9 @@ If either is ambiguous, ask before proceeding.
 
 ### Step 2: Run Data Collection Script
 
-Run the categorization script:
+Run the categorization script, where `<base>` is this skill's base directory:
 ```bash
-python3 skills/github-work-summary/scripts/collect_activity.py "<period>" "<org>" "<today_date>"
+python3 "<base>/scripts/collect_activity.py" "<period>" "<org>" "<today_date>"
 ```
 
 The script outputs JSON with all matching PRs and issues. Capture this output for Step 3.
@@ -115,7 +115,7 @@ Organize by theme, not chronologically. Use this structure:
 
 ## Data Collection Script
 
-The data collection script lives at `skills/github-work-summary/scripts/collect_activity.py`.
+The data collection script lives at `scripts/collect_activity.py` in this skill's directory.
 
 ## Date Calculation Reference
 

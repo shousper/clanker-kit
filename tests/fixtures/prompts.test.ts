@@ -1,5 +1,15 @@
 import { describe, it, expect } from "bun:test";
+import { readdirSync } from "fs";
 import { activationTests } from "./prompts";
+import { SKILLS_DIR, STORIES_SKILLS_DIR, WRITING_SKILLS_DIR } from "../utils/paths";
+
+// Activation names as the harnesses report them: kit skills are bare, the stories and
+// writing plugins are namespaced.
+const SHIPPED_SKILLS = new Set([
+  ...readdirSync(SKILLS_DIR),
+  ...readdirSync(STORIES_SKILLS_DIR).map((name) => `stories:${name}`),
+  ...readdirSync(WRITING_SKILLS_DIR).map((name) => `writing:${name}`),
+]);
 
 describe("activationTests", () => {
   it("flattens to ActivationTest[] with correct fields", () => {
@@ -30,14 +40,9 @@ describe("activationTests", () => {
     }
   });
 
-  it("includes code-standards tests", () => {
-    const codeStandards = activationTests.filter((t) => t.skill === "code-standards");
-    expect(codeStandards.length).toBeGreaterThanOrEqual(6);
-
-    const positive = codeStandards.filter((t) => t.shouldActivate);
-    const negative = codeStandards.filter((t) => !t.shouldActivate);
-    expect(positive.length).toBeGreaterThanOrEqual(3);
-    expect(negative.length).toBeGreaterThanOrEqual(3);
+  it("only targets skills that ship, so a retired skill cannot linger as an unreachable eval", () => {
+    const targeted = new Set(activationTests.map((t) => t.skill));
+    for (const skill of targeted) expect(SHIPPED_SKILLS.has(skill), `fixtures target unknown skill ${skill}`).toBe(true);
   });
 
   it("includes stories plugin fixtures for all five skills", () => {

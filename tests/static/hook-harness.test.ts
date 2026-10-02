@@ -1,14 +1,13 @@
 import { describe, it, expect, afterAll } from "bun:test";
 import { join } from "path";
-import { writeFile, mkdtemp, rm } from "fs/promises";
-import { tmpdir } from "os";
+import { readdirSync } from "fs";
 import {
   getHclWorkspace,
   cleanupHookWorkspace,
   runHook,
   runNeutralScript,
 } from "../utils/hook-workspace";
-import { ROOT, HOOKS_DIR } from "../utils/paths";
+import { ROOT, HOOKS_DIR, SKILLS_DIR } from "../utils/paths";
 
 afterAll(async () => {
   await cleanupHookWorkspace();
@@ -30,18 +29,6 @@ describe("session-start.sh", () => {
     expect(json.hookSpecificOutput.hookEventName).toBe("SessionStart");
     expect(json.hookSpecificOutput.additionalContext).toContain("EXTREMELY_IMPORTANT");
     expect(json.hookSpecificOutput.additionalContext).toContain("kit");
-  });
-
-  it("includes code-standards trigger instruction", async () => {
-    const result = await runHook("session-start.sh", {
-      tool_name: "",
-      tool_input: {},
-      cwd: ROOT,
-    });
-
-    expect(result.exitCode).toBe(0);
-    const json = JSON.parse(result.stdout);
-    expect(json.hookSpecificOutput.additionalContext).toContain("code-standards");
   });
 });
 
@@ -103,22 +90,21 @@ describe("hcl-detect.sh", () => {
     expect(second.stdout.trim()).toBe("");
   });
 
-  it("hcl-detect prunes scratch files older than a day and keeps fresh ones", async () => {
+  it("hcl-detect prunes scratch and standards-gate state older than a day and keeps fresh ones", async () => {
     const cfg = await import("fs/promises").then(fs => import("os").then(os => fs.mkdtemp(join(os.tmpdir(),"kit-cfg-"))));
     const { mkdir, writeFile, utimes, stat } = await import("fs/promises");
     const stateDir = join(cfg, "kit/state");
     await mkdir(stateDir, { recursive: true });
-    const oldF = join(stateDir, "touched-dead.txt");
-    const freshF = join(stateDir, "touched-live.txt");
-    await writeFile(oldF, "/x/main.tf\n");
-    await writeFile(freshF, "/y/main.tf\n");
+    const stale = ["touched-dead.txt", "standards-dead.txt"].map((n) => join(stateDir, n));
+    const fresh = ["touched-live.txt", "standards-live.txt"].map((n) => join(stateDir, n));
+    for (const p of [...stale, ...fresh]) await writeFile(p, "/x/main.tf\n");
     const twoDaysAgo = new Date(Date.now() - 2 * 86400_000);
-    await utimes(oldF, twoDaysAgo, twoDaysAgo);
+    for (const p of stale) await utimes(p, twoDaysAgo, twoDaysAgo);
     // cwd need not be HCL; prune runs regardless before the early-exits.
     const nonHcl = await import("fs/promises").then(fs => import("os").then(os => fs.mkdtemp(join(os.tmpdir(),"nohcl-"))));
     await runHook("hcl-detect.sh", { tool_name:"", tool_input:{}, cwd: nonHcl, env: { CLAUDE_CONFIG_DIR: cfg } });
-    await expect(stat(oldF)).rejects.toThrow();   // pruned
-    await expect(stat(freshF)).resolves.toBeDefined(); // kept
+    for (const p of stale) await expect(stat(p)).rejects.toThrow();   // pruned
+    for (const p of fresh) await expect(stat(p)).resolves.toBeDefined(); // kept
   });
 });
 
@@ -129,19 +115,18 @@ describe("session-context.sh", () => {
     const r = await runNeutralScript("session-context.sh", { env: { KIT_PLUGIN_ROOT: ROOT } });
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("EXTREMELY_IMPORTANT");
-    expect(r.stdout).toContain("code-standards");
     expect(r.stdout).not.toContain("hookSpecificOutput");
     expect(r.stdout).not.toContain("{\n");
     expect(r.stdout.split("\n")[0]).not.toBe("---"); // frontmatter stripped
   });
 
-  it("appends an HCL pin hint when the given cwd pins a tool", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pin-hint-"));
-    await writeFile(join(dir, ".opentofu-version"), "1.8.0\n");
-    const r = await runNeutralScript("session-context.sh", { args: [dir], env: { KIT_PLUGIN_ROOT: ROOT } });
+  it("names only kit skills that ship, so agents never copy an 'Unknown skill'", async () => {
+    const r = await runNeutralScript("session-context.sh", { env: { KIT_PLUGIN_ROOT: ROOT } });
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("tofu");
-    await rm(dir, { recursive: true, force: true });
+    const shipped = new Set(readdirSync(SKILLS_DIR));
+    const named = [...r.stdout.matchAll(/\bkit:([a-z0-9-]+)/g)].map((m) => m[1]);
+    expect(named.length).toBeGreaterThan(0);
+    for (const name of named) expect(shipped.has(name), `session context names kit:${name}`).toBe(true);
   });
 
   it("fails loudly without KIT_PLUGIN_ROOT (no silent wrong-path read)", async () => {

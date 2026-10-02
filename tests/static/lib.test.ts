@@ -41,16 +41,4 @@ describe("lib.sh", () => {
     const r = await sh(`f=$(mktemp); printf 'plain body\\n' > "$f"; strip_frontmatter "$f"; rm -f "$f"`);
     expect(r.out).toBe("plain body\n");
   });
-
-  it("kit_hcl_pin_hint reports tofu for .opentofu-version and terraform for .terraform-version/.tfswitchrc, cwd-only", async () => {
-    for (const [pin, want] of [[".opentofu-version", "tofu"], [".terraform-version", "terraform"], [".tfswitchrc", "terraform"]] as const) {
-      const r = await sh(`d=$(mktemp -d); : > "$d/${pin}"; kit_hcl_pin_hint "$d"; rm -rf "$d"`);
-      expect(r.out.trim()).toBe(want);
-    }
-  });
-
-  it("kit_hcl_pin_hint does not walk ancestors", async () => {
-    const r = await sh(`d=$(mktemp -d); mkdir -p "$d/child"; : > "$d/.terraform-version"; kit_hcl_pin_hint "$d/child" && echo Y || echo N`);
-    expect(r.out.trim()).toBe("N");
-  });
 });

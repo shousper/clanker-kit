@@ -78,19 +78,6 @@ const prompts: Record<string, SkillPrompts> = {
     ],
   },
 
-  "code-standards": {
-    activate: [
-      { prompt: "Add proper error handling to the HTTP server in cmd/server/main.go", workspace: "go" },
-      { prompt: "Refactor src/main.rs to use proper error handling instead of unwrap", workspace: "rust" },
-      { prompt: "Convert the inline styles in src/App.tsx to use Tailwind CSS classes", workspace: "tailwind" },
-    ],
-    skip: [
-      { prompt: "What does the Go server in cmd/server/main.go do?", workspace: "go" },
-      "Review the PR for any issues",
-      "Fix the failing test in tests/index.test.ts",
-    ],
-  },
-
   "writing:writing-docs": {
     activate: [
       { prompt: "Write a README for this package that explains installation and basic usage", workspace: "writing" },

@@ -54,7 +54,7 @@ brainstorming → writing-plans → build-flow → finish-branch
 
 Each stage flows into the next automatically. You can enter at any point if you already have what the earlier stages produce.
 
-## Skills (18)
+## Skills (17)
 
 ### Core Workflow
 
@@ -72,6 +72,7 @@ Each stage flows into the next automatically. You can enter at any point if you 
 | `tdd` | Test-driven development — write failing test first, implement minimally |
 | `debugging` | Systematic debugging before proposing fixes |
 | `code-review` | Verify implementation meets requirements at review checkpoints |
+| `consult-codex` | Get a second opinion from Codex on a design, diff, or bug |
 | `receiving-review` | Handle code review feedback with technical rigor |
 | `verify` | Run verification before claiming work is complete |
 
@@ -96,10 +97,15 @@ Each stage flows into the next automatically. You can enter at any point if you 
 
 | Event | Hook | Trigger |
 |-------|------|---------|
+| PreToolUse | `standards-check.sh` | Edit/Write/MultiEdit — blocks an agent's first edit in Go, Rust, HCL, or Tailwind CSS until it has read that language's standards file; asks once per language per agent, and allows the edit if the check itself fails |
+| PostToolUse | `standards-seen.sh` | Read — marks a language's standards as loaded when the agent reads its `CLAUDE.md` in full; a ranged read doesn't count |
 | PostToolUse | `record.sh` | Write/Edit — records edited source paths (Go, Rust, JS/TS, HCL/Terraform/OpenTofu) to an agent-scoped scratch; never modifies files |
 | Stop + SubagentStop | `format-on-stop.sh` | End of turn — formats the touched files and runs checks once, surfacing results as a single non-blocking message (advisory, not mid-turn blocking) |
-| SessionStart | `session-start.sh` | Session startup, resume, clear, compact — kit intro and code-standards guidance |
+| SessionStart | `session-start.sh` | Session startup, resume, clear, compact — kit intro |
 | SessionStart | `hcl-detect.sh` | Startup/resume — one-time HCL tool-detection notice and scratch prune |
+| SessionStart | `standards-reset.sh` | Clear/compact — forgets which standards were loaded, because the text has left the context |
+
+On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`, `tool_result`, and `session_compact` events.
 
 ## Agents
 
@@ -109,12 +115,16 @@ Each stage flows into the next automatically. You can enter at any point if you 
 
 ## Code Standards
 
-Bundled coding standards for automatic reference when working with:
+Kit bundles coding standards for these languages:
 
 - **Go** — formatting, error handling, project structure
 - **Rust** — clippy lints, formatting, idiomatic patterns
-- **Python** — style, type hints, project conventions
-- **Tailwind CSS** — utility classes, component patterns
+- **HCL (Terraform/OpenTofu)** — file layout, naming, variables, outputs, version pinning, tooling
+- **Tailwind CSS** — utility classes, component patterns; applies only in a project with a `tailwind.config.*` file or a `tailwindcss` dependency
+
+A hook enforces them. The first time an agent edits a file in one of these languages, kit blocks the edit and tells the agent to read that language's standards file in full. The agent then retries. Kit asks once per language per agent, and a read with a line range doesn't count. Compaction resets the check, because the standards text leaves the context. Edits made through shell commands, such as `sed -i`, aren't checked.
+
+Python has no standards file yet, so Python edits aren't gated.
 
 ## Tools
 
@@ -156,7 +166,7 @@ To release: bump the version in the plugin's manifest **and** its catalogue entr
 ## Credits
 
 - [superpowers](https://github.com/obra/superpowers) by Jesse Vincent — kit's skill framework is heavily inspired by superpowers. MIT licensed.
-- [ethpandaops/ai-cookbook](https://github.com/ethpandaops/ai-cookbook) — code standards and hook patterns for Go, Rust, Python, and Tailwind CSS.
+- [ethpandaops/ai-cookbook](https://github.com/ethpandaops/ai-cookbook) — code standards and hook patterns for Go, Rust, and Tailwind CSS.
 
 ## License
 

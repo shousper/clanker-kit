@@ -1,6 +1,6 @@
 # Code Review Dispatch Template
 
-This is NOT an agent definition — it is placeholder scaffolding for dispatching the `kit:code-reviewer` agent. The agent definition (`shared/agents/code-reviewer.md`) supplies the comprehensive review framework (plan alignment, code quality, architecture, documentation). This template adds: what to review, how to get the diff, and output format.
+This is NOT an agent definition — it is placeholder scaffolding for dispatching the `kit:code-reviewer` agent. The agent definition supplies the comprehensive review framework (plan alignment, code quality, architecture, documentation). This template adds: what to review, how to get the diff, and output format.
 
 **Your task:**
 1. Review {WHAT_WAS_IMPLEMENTED}

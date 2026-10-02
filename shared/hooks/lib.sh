@@ -36,6 +36,27 @@ kit_nearest_dir() {  # kit_nearest_dir <start-dir> <marker>
   done
 }
 
+# Physical absolute path of an existing file: every symlink (in the directory
+# part and the file itself, relative or absolute) resolved. Prints the path, or
+# returns 1 when <file> is not an existing file. Does not need GNU realpath.
+kit_physical_path() {  # kit_physical_path <file>
+  local p="${1:-}" dir target hops=0 linkdir
+  [ -n "$p" ] || return 1
+  while [ -L "$p" ]; do
+    hops=$((hops + 1)); [ "$hops" -le 40 ] || return 1   # symlink loop
+    target="$(readlink "$p")" || return 1
+    case "$p" in */*) linkdir="${p%/*}" ;; *) linkdir="." ;; esac
+    case "$target" in
+      /*) p="$target" ;;
+      *) p="${linkdir}/$target" ;;   # relative to the link's directory
+    esac
+  done
+  [ -f "$p" ] || return 1
+  dir="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+  [ "$dir" = "/" ] && dir=""
+  printf '%s/%s' "$dir" "${p##*/}"
+}
+
 # Drop a leading YAML frontmatter block (--- ... ---) from a markdown file, if
 # present; print the rest unchanged. No-op when the file doesn't start with one.
 strip_frontmatter() {  # strip_frontmatter <file>
@@ -45,15 +66,4 @@ strip_frontmatter() {  # strip_frontmatter <file>
     infm { next }
     { print }
   ' "$1"
-}
-
-# Cheap, cwd-only hint: does <dir> itself (no ancestor walk) pin an HCL tool via
-# a version-pin file? Prints the pinned tool name, or returns 1. NOT the
-# authoritative resolution — see hcl-tool.sh for that (ancestor-aware, cached,
-# also considers tracked *.tofu files and PATH availability).
-kit_hcl_pin_hint() {  # kit_hcl_pin_hint <dir>
-  local d="$1"
-  [ -f "$d/.opentofu-version" ] && { printf 'tofu'; return 0; }
-  { [ -f "$d/.terraform-version" ] || [ -f "$d/.tfswitchrc" ]; } && { printf 'terraform'; return 0; }
-  return 1
 }

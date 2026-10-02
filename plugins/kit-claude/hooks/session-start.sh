@@ -7,11 +7,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 export KIT_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "${script_dir}/.." && pwd)}"
 
-input="$(cat)"
-cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
-[ -n "$cwd" ] || cwd="$(pwd)"
-
-body="$("${script_dir}/shared/session-context.sh" "$cwd")"
+body="$("${script_dir}/shared/session-context.sh")"
 
 # Escape string for JSON embedding using bash parameter substitution.
 # Each ${s//old/new} is a single C-level pass - orders of magnitude

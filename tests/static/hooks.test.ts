@@ -7,7 +7,7 @@ import { HOOKS_DIR, KIT_CLAUDE_HOOKS_DIR } from "../utils/paths";
 // See: https://docs.anthropic.com/en/docs/claude-code/hooks
 const VALID_EVENTS = ["PreToolUse", "PostToolUse", "SessionStart", "Stop", "SubagentStop"];
 const VALID_TOOL_MATCHERS = [
-  "Write", "Edit", "Read", "Bash", "Glob", "Grep", "WebFetch", "WebSearch",
+  "Write", "Edit", "MultiEdit", "Read", "Bash", "Glob", "Grep", "WebFetch", "WebSearch",
   "Task", "Skill", "NotebookEdit", "TodoWrite",
 ];
 const VALID_SESSION_EVENTS = ["startup", "resume", "clear", "compact"];
@@ -42,11 +42,12 @@ describe("hooks.json", () => {
     }
   });
 
-  it("PostToolUse matchers reference valid tool names", () => {
-    const postToolUse = hooksConfig.hooks.PostToolUse ?? [];
-    for (const entry of postToolUse) {
-      for (const tool of entry.matcher.split("|")) {
-        expect(VALID_TOOL_MATCHERS).toContain(tool);
+  it("PreToolUse and PostToolUse matchers reference valid tool names", () => {
+    for (const event of ["PreToolUse", "PostToolUse"]) {
+      for (const entry of hooksConfig.hooks[event] ?? []) {
+        for (const tool of entry.matcher.split("|")) {
+          expect(VALID_TOOL_MATCHERS, `${event} matcher "${entry.matcher}"`).toContain(tool);
+        }
       }
     }
   });
@@ -105,6 +106,14 @@ describe("hooks.json", () => {
     expect(cmds("Stop").some((c: string) => c.endsWith("/format-on-stop.sh"))).toBe(true);
     expect(cmds("SubagentStop").some((c: string) => c.endsWith("/format-on-stop.sh"))).toBe(true);
     expect(cmds("SessionStart").some((c: string) => c.endsWith("/hcl-detect.sh"))).toBe(true);
+    const matchers = (e: string, script: string): string[] =>
+      (hooksConfig.hooks[e] ?? [])
+        .filter((x: any) => x.hooks.some((h: any) => h.command.endsWith("/" + script)))
+        .flatMap((x: any) => x.matcher.split("|"));
+    // Standards gate: gates every file-editing tool, sees only Reads, resets on /clear and compaction.
+    expect(matchers("PreToolUse", "standards-check.sh").sort()).toEqual(["Edit", "MultiEdit", "Write"]);
+    expect(matchers("PostToolUse", "standards-seen.sh")).toEqual(["Read"]);
+    expect(matchers("SessionStart", "standards-reset.sh").sort()).toEqual(["clear", "compact"]);
     const all = Object.values(hooksConfig.hooks).flat().flatMap((x: any) => x.hooks.map((h: any) => h.command));
     for (const dead of ["gofmt.sh","rustfmt.sh","eslint.sh","typescript.sh","clippy.sh","cargo-check.sh","hcl-record.sh","hcl-fmt.sh"]) {
       expect(all.some((c: string) => c.endsWith("/" + dead))).toBe(false);

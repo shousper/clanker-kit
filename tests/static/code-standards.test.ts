@@ -1,15 +1,23 @@
 import { describe, it, expect } from "bun:test";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import { resolve } from "path";
-import { CODE_STANDARDS_DIR, SKILLS_DIR, HOOKS_DIR } from "../utils/paths";
+import { CODE_STANDARDS_DIR } from "../utils/paths";
+
+describe("bundled code standards", () => {
+  it("every language directory ships a standards file with real content", () => {
+    // The standards gate treats an existing code-standards/<lang>/CLAUDE.md as a
+    // reason to block an edit and send the agent to read it. A heading-only
+    // placeholder sends agents to a file that teaches them nothing.
+    const languages = readdirSync(CODE_STANDARDS_DIR, { withFileTypes: true }).filter((e) => e.isDirectory());
+    expect(languages.length).toBeGreaterThan(0);
+    for (const lang of languages) {
+      const text = readFileSync(resolve(CODE_STANDARDS_DIR, lang.name, "CLAUDE.md"), "utf-8");
+      expect(text.length, `code-standards/${lang.name}/CLAUDE.md`).toBeGreaterThan(1500);
+    }
+  });
+});
 
 describe("HCL code standard", () => {
-  it("code-standards/hcl/CLAUDE.md exists and is substantial", () => {
-    const path = resolve(CODE_STANDARDS_DIR, "hcl/CLAUDE.md");
-    expect(existsSync(path)).toBe(true);
-    expect(readFileSync(path, "utf-8").length).toBeGreaterThan(1500);
-  });
-
   it("covers the required sections", () => {
     const text = readFileSync(resolve(CODE_STANDARDS_DIR, "hcl/CLAUDE.md"), "utf-8");
     for (const heading of ["File", "Naming", "Variables", "Outputs", "Resources", "Version", "Tooling"]) {
@@ -21,23 +29,5 @@ describe("HCL code standard", () => {
     const text = readFileSync(resolve(CODE_STANDARDS_DIR, "hcl/CLAUDE.md"), "utf-8").toLowerCase();
     expect(text).not.toContain("ident");        // bespoke ident map
     expect(text).not.toContain("configure module"); // bespoke multi-provider pattern
-  });
-
-  it("SKILL.md maps HCL extensions to the standard", () => {
-    const text = readFileSync(resolve(SKILLS_DIR, "code-standards/SKILL.md"), "utf-8");
-    expect(text).toContain("code-standards/hcl/CLAUDE.md");
-    expect(text).toContain(".tofu");
-  });
-
-  it("SKILL.md frontmatter description mentions HCL so it triggers on HCL files", () => {
-    const text = readFileSync(resolve(SKILLS_DIR, "code-standards/SKILL.md"), "utf-8");
-    const frontmatter = text.split("---")[1] ?? "";
-    const description = frontmatter.match(/description:\s*(.+)/)?.[1] ?? "";
-    expect(/HCL|Terraform|OpenTofu/.test(description)).toBe(true);
-  });
-
-  it("session-context.sh names HCL in the code-standards instruction", () => {
-    const text = readFileSync(resolve(HOOKS_DIR, "session-context.sh"), "utf-8");
-    expect(/HCL|Terraform|OpenTofu/.test(text)).toBe(true);
   });
 });

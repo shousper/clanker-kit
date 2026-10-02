@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { omp } from "../utils/harness/omp";
+import type { ToolResultEvent } from "../utils/harness/types";
 import { ROOT } from "../utils/paths";
 
 const FIXTURE = readFileSync(resolve(ROOT, "tests/fixtures/events/omp-skill-activation.jsonl"), "utf-8");
@@ -9,6 +10,7 @@ const FALLBACK_ERROR_FIXTURE = readFileSync(
   resolve(ROOT, "tests/fixtures/events/omp-fallback-error.jsonl"),
   "utf-8",
 );
+const FAILED_READ_FIXTURE = readFileSync(resolve(ROOT, "tests/fixtures/events/omp-failed-read.jsonl"), "utf-8");
 
 describe("omp adapter", () => {
   it("pins an exact, provider-qualified model id, never a fuzzy alias", () => {
@@ -71,5 +73,35 @@ describe("omp adapter", () => {
       kind: "error",
       message: "extension crashed: ENOENT config.json",
     });
+  });
+
+  it("emits each tool outcome once, keyed by the call it answers, with its error flag", () => {
+    const results = omp.parse(FAILED_READ_FIXTURE).filter((e): e is ToolResultEvent => e.kind === "tool_result");
+    expect(results.map((r) => [r.id, r.isError])).toEqual([
+      ["toolu_failRead01", true],
+      ["toolu_blocked002", true],
+      ["toolu_stdRead003", false],
+      ["toolu_write00004", false],
+    ]);
+    expect(results[0].text).toStartWith("File not found:");
+    expect(results[1].text).toStartWith("kit: before editing");
+  });
+
+  it("emits only assistant prose as text, not the prompt or tool output", () => {
+    const texts = omp.parse(FIXTURE).filter((e) => e.kind === "text").map((e) => (e.kind === "text" ? e.text : ""));
+    expect([...new Set(texts)]).toEqual(["DONE"]);
+  });
+
+  it("does not count a failed skill:// read as an activation", () => {
+    // The real defect: skill://code-standards/../../code-standards/hcl/CLAUDE.md fails to
+    // resolve, yet the call alone used to score as activation.
+    const events = omp.parse(FAILED_READ_FIXTURE);
+    expect(events).toContainEqual({
+      kind: "tool_call",
+      tool: "read",
+      input: { path: "skill://code-standards/../../code-standards/hcl/CLAUDE.md" },
+      id: "toolu_failRead01",
+    });
+    expect(omp.skillActivationSignal(events, "code-standards")).toBe(false);
   });
 });

@@ -24,7 +24,7 @@ Run the bundled review workflow to fan out independent review dimensions over a 
 
 ### Within build-flow
 
-When work is being executed by kit:build-flow, the batch review gate inside `build.workflow.js` already runs spec + quality review (with a staged fix-loop) at every batch boundary. Do **not** launch a separate review mid-build — pass the decisions ledger so reviewers have cross-batch awareness. Use a standalone review only for a final pre-merge pass.
+When work is being executed by kit:build-flow, the batch review gate inside the build-flow workflow already runs spec + quality review (with a staged fix-loop) at every batch boundary. Do **not** launch a separate review mid-build — pass the decisions ledger so reviewers have cross-batch awareness. Use a standalone review only for a final pre-merge pass.
 
 ### Standalone
 
@@ -33,7 +33,7 @@ When you want an independent review of a diff:
 1. **Pick the diff ref.**
    - Uncommitted work (default): the workflow diffs against `main`.
    - Committed/PR range: pass `diffRef: "{BASE_SHA}..{HEAD_SHA}"`.
-2. **Locate the workflow.** This skill is loaded with its base directory; the runner is `<base>/review.workflow.js`.
+2. **Locate the workflow.** This skill is loaded with its base directory. The runner is the `review.workflow.*` file in that directory; `launch.md` names the exact file for your harness.
 3. **Launch it.** Read `launch.md` in this skill's directory for your harness's exact launch mechanics, then extract the runner's return — `{ diffRef, findings }` — from the completion payload as described there.
 4. **Act on the consolidated findings** (below).
 
@@ -65,8 +65,8 @@ Reviewers are ephemeral, so cross-task awareness comes from the **decisions ledg
 ## Integration
 
 - **kit:build-flow** — Its batch review gate covers in-flight batches; this skill handles standalone/pre-merge reviews.
-- **Review rubric:** `agents/code-reviewer.md` — canonical review framework (plan alignment, code quality, architecture, documentation), and `code-review/dispatch-template.md` — context placeholders and output format that inform the workflow's dimension prompts.
-- **Workflow:** `./review.workflow.js` — the bundled fan-out-and-verify runner this skill launches.
+- **Review rubric:** the `code-reviewer` agent — canonical review framework (plan alignment, code quality, architecture, documentation) — and `dispatch-template.md` in this skill's directory — context placeholders and output format that inform the workflow's dimension prompts.
+- **Workflow:** the bundled fan-out-and-verify runner this skill launches; `launch.md` in this skill's directory names the file for your harness.
 
 ## Scope and Recommended Focus
 

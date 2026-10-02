@@ -94,11 +94,18 @@ describe("symlink integrity", () => {
       expect(lstatSync(KIT_CLAUDE_HOOKS_DIR).isDirectory()).toBe(true);
     });
 
-    it("plugins/kit-claude/hooks contains hooks.json and every protocol wrapper as real files", () => {
-      for (const name of ["hooks.json", "session-start.sh", "record.sh", "format-on-stop.sh", "hcl-detect.sh"]) {
+    it("plugins/kit-claude/hooks contains hooks.json and every protocol wrapper as real, executable files", () => {
+      const wrappers = [
+        "session-start.sh", "record.sh", "format-on-stop.sh", "hcl-detect.sh",
+        "standards-check.sh", "standards-seen.sh", "standards-reset.sh",
+      ];
+      for (const name of ["hooks.json", ...wrappers]) {
         const full = resolve(KIT_CLAUDE_HOOKS_DIR, name);
         expect(existsSync(full), `${name} missing`).toBe(true);
         expect(lstatSync(full).isSymbolicLink(), `${name} should be a real file`).toBe(false);
+        if (wrappers.includes(name)) {
+          expect(statSync(full).mode & 0o111, `${name} should be executable`).not.toBe(0);
+        }
       }
     });
 

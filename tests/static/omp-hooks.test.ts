@@ -1,7 +1,10 @@
-import { describe, it, expect } from "bun:test";
-import { homedir } from "os";
-import { resolve } from "path";
-import { collectEditedPaths, buildFormatCommand, resolveStateDir, createHandlers, type ExecOpts, type ExecResult, type HookHandlerDeps } from "../../plugins/kit-omp/omp/hooks";
+import { afterEach, describe, it, expect } from "bun:test";
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { join, resolve } from "path";
+import { CODE_STANDARDS_DIR, HOOKS_DIR } from "../utils/paths";
+import { collectEditedPaths, buildFormatCommand, resolveStateDir, createHandlers, registerHooks, type ExecOpts, type ExecResult, type HookHandlerDeps } from "../../plugins/kit-omp/omp/hooks";
 
 const PLUGIN_ROOT = "/plugin-root";
 const CWD = "/work";
@@ -114,7 +117,7 @@ describe("createHandlers: sessionStart", () => {
     await handlers.sessionStart({}, ctxFor("S1"));
 
     expect(deps.sentMessages).toEqual(["governance block"]);
-    expect(deps.execCalls).toEqual([{ command: resolve(PLUGIN_ROOT, "hooks/session-context.sh"), args: ["/work"], opts: { cwd: "/work" } }]);
+    expect(deps.execCalls).toEqual([{ command: resolve(PLUGIN_ROOT, "hooks/session-context.sh"), args: [], opts: { cwd: "/work" } }]);
   });
 
   it("sends nothing when the script prints only whitespace", async () => {
@@ -132,7 +135,7 @@ describe("createHandlers: sessionStart", () => {
 
     await handlers.sessionStart({});
 
-    expect(deps.execCalls[0]?.args).toEqual([process.cwd()]);
+    expect(deps.execCalls[0]?.opts).toEqual({ cwd: process.cwd() });
   });
 
   it("swallows a throwing exec instead of propagating", async () => {
@@ -314,5 +317,186 @@ describe("createHandlers: shared state across repeated calls", () => {
     await createHandlers(PLUGIN_ROOT, deps, shared).sessionStop({}, ctxFor("S1"));
 
     expect(deps.execCalls).toEqual([formatCall("/work", "/proj/a.go")]);
+  });
+});
+
+const GATE = resolve(PLUGIN_ROOT, "hooks/standards-gate.sh");
+const gateCall = (cwd: string, key: string, ...args: string[]) => ({
+  command: GATE,
+  args,
+  opts: { cwd, env: { KIT_SCRATCH_KEY: key } },
+});
+const REASON = "kit: read Rust standards";
+
+describe("createHandlers: toolCall (standards gate)", () => {
+  it("blocks exit 2 with trimmed reason and the session scratch key", async () => {
+    const deps = fakeDeps(async () => ({ stdout: `  ${REASON}\n`, stderr: "", code: 2 }));
+    const handlers = createHandlers(PLUGIN_ROOT, deps);
+    expect(await handlers.toolCall({ toolName: "edit", input: { path: "/proj/a.rs" } }, ctxFor("child")))
+      .toEqual({ block: true, reason: REASON });
+    expect(deps.execCalls).toEqual([gateCall("/work", "child", "check", "/proj/a.rs")]);
+  });
+
+  it("allows exit 0 and a thrown exec", async () => {
+    expect(await createHandlers(PLUGIN_ROOT, fakeDeps()).toolCall(
+      { toolName: "write", input: { path: "/proj/a.rs" } }, ctxFor("S1"),
+    )).toBeUndefined();
+    const broken = createHandlers(PLUGIN_ROOT, fakeDeps(async () => { throw new Error("spawn failed"); }));
+    await expect(broken.toolCall({ toolName: "edit", input: { path: "/proj/a.rs" } }, ctxFor("S1")))
+      .resolves.toBeUndefined();
+  });
+
+  it("checks a multi-path batch in order and stops at the first blocked path", async () => {
+    const deps = fakeDeps(async (_command, args) => args[1] === "/work/b.rs"
+      ? { stdout: REASON, stderr: "", code: 2 }
+      : { stdout: "", stderr: "", code: 0 });
+    const result = await createHandlers(PLUGIN_ROOT, deps).toolCall(
+      { toolName: "edit", input: { paths: ["a.go", "b.rs", "c.tf"] } }, ctxFor("S1"),
+    );
+    expect(result).toEqual({ block: true, reason: REASON });
+    expect(deps.execCalls.map((call) => call.args)).toEqual([
+      ["check", "/work/a.go"], ["check", "/work/b.rs"],
+    ]);
+  });
+
+  it("uses default only without a session manager and skips non-editing tools", async () => {
+    const deps = fakeDeps();
+    const handlers = createHandlers(PLUGIN_ROOT, deps);
+    await handlers.toolCall({ toolName: "write", input: { path: "src/a.rs" } });
+    await handlers.toolCall({ toolName: "read", input: { path: "/proj/a.rs" } }, ctxFor("S1"));
+    expect(deps.execCalls).toEqual([gateCall(process.cwd(), "default", "check", resolve(process.cwd(), "src/a.rs"))]);
+  });
+});
+
+describe("createHandlers: standards reads and compaction", () => {
+  it.each([
+    ["/standards/rust/CLAUDE.md", "/standards/rust/CLAUDE.md"],
+    ["CLAUDE.md", "/work/CLAUDE.md"],
+    ["CLAUDE.md:raw", "/work/CLAUDE.md:raw"],
+  ])("marks a full standards read for %s", async (path, expected) => {
+    const deps = fakeDeps();
+    await createHandlers(PLUGIN_ROOT, deps).toolResult(
+      { toolName: "read", input: { path }, isError: false }, ctxFor("S1"),
+    );
+    expect(deps.execCalls).toEqual([gateCall("/work", "S1", "seen", expected)]);
+  });
+
+  it.each(["CLAUDE.md:1-40", "notes/CLAUDE.md.bak", "README.md"])
+  ("does not mark partial or unrelated reads: %s", async (path) => {
+    const deps = fakeDeps();
+    await createHandlers(PLUGIN_ROOT, deps).toolResult(
+      { toolName: "read", input: { path }, isError: false }, ctxFor("S1"),
+    );
+    expect(deps.execCalls).toEqual([]);
+  });
+
+  it("does not mark errored or non-read results, and swallows seen failure", async () => {
+    const deps = fakeDeps(async () => { throw new Error("seen failed"); });
+    const handlers = createHandlers(PLUGIN_ROOT, deps);
+    await expect(handlers.toolResult({ toolName: "read", input: { path: "CLAUDE.md" }, isError: false }, ctxFor("S1")))
+      .resolves.toBeUndefined();
+    const callsAfterFailure = deps.execCalls.length;
+    await handlers.toolResult({ toolName: "read", input: { path: "CLAUDE.md" }, isError: true }, ctxFor("S1"));
+    await handlers.toolResult({ toolName: "grep", input: { path: "CLAUDE.md" }, isError: false }, ctxFor("S1"));
+    expect(deps.execCalls).toHaveLength(callsAfterFailure);
+  });
+
+  it("resets gate state on compaction without changing formatter tracking", async () => {
+    const deps = fakeDeps();
+    const handlers = createHandlers(PLUGIN_ROOT, deps);
+    await handlers.toolResult({ toolName: "write", input: { path: "/proj/a.go" }, isError: false }, ctxFor("S1"));
+    await handlers.sessionCompact({}, ctxFor("S1"));
+    await handlers.sessionStop({}, ctxFor("S1"));
+    expect(deps.execCalls).toEqual([
+      gateCall("/work", "S1", "reset"),
+      formatCall("/work", "/proj/a.go"),
+    ]);
+  });
+});
+
+const temporaryRoots: string[] = [];
+afterEach(() => temporaryRoots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+
+function gateProject(): { pluginRoot: string; cwd: string; state: string; standards: string } {
+  const pluginRoot = realpathSync(mkdtempSync(join(tmpdir(), "kit-omp-gate-")));
+  temporaryRoots.push(pluginRoot);
+  const cwd = join(pluginRoot, "project");
+  const state = join(pluginRoot, "state");
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(state);
+  symlinkSync(HOOKS_DIR, join(pluginRoot, "hooks"));
+  symlinkSync(CODE_STANDARDS_DIR, join(pluginRoot, "code-standards"));
+  writeFileSync(join(cwd, "main.rs"), "fn main() {}\n");
+  return { pluginRoot, cwd, state, standards: join(pluginRoot, "code-standards", "rust", "CLAUDE.md") };
+}
+
+function registerWithState(project: { pluginRoot: string; state: string }) {
+  const registered = new Map<string, (event: any, ctx: any) => Promise<unknown>>();
+  const pi = {
+    on(name: string, handler: (event: any, ctx: any) => Promise<unknown>) { registered.set(name, handler); },
+    sendMessage() {},
+  } as unknown as ExtensionAPI;
+  registerHooks(pi, project.pluginRoot);
+  return registered;
+}
+
+describe("registerHooks: standards gate integration", () => {
+  it("blocks once, records a full read, and re-arms on compaction using real Bun.spawn", async () => {
+    const project = gateProject();
+    const original = process.env.KIT_STATE_DIR;
+    process.env.KIT_STATE_DIR = project.state;
+    try {
+      const registered = registerWithState(project);
+      const ctx = { cwd: project.cwd, hasUI: false, sessionManager: { getSessionId: () => "subagent" } };
+      const toolCall = registered.get("tool_call");
+      const toolResult = registered.get("tool_result");
+      const compact = registered.get("session_compact");
+      expect(toolCall).toBeDefined();
+      expect(toolResult).toBeDefined();
+      expect(compact).toBeDefined();
+
+      expect(await toolCall!({ toolName: "edit", input: { path: "main.rs" } }, ctx)).toEqual({
+        block: true,
+        reason: expect.stringContaining("code-standards/rust/CLAUDE.md"),
+      });
+      expect(await toolCall!({ toolName: "edit", input: { path: "main.rs" } }, ctx)).toBeUndefined();
+      await toolResult!({ toolName: "read", input: { path: project.standards }, isError: false }, ctx);
+      expect(await toolCall!({ toolName: "edit", input: { path: "main.rs" } }, ctx)).toBeUndefined();
+      await compact!({}, ctx);
+      expect(await toolCall!({ toolName: "edit", input: { path: "main.rs" } }, ctx)).toEqual({
+        block: true,
+        reason: expect.stringContaining("code-standards/rust/CLAUDE.md"),
+      });
+    } finally {
+      if (original === undefined) delete process.env.KIT_STATE_DIR;
+      else process.env.KIT_STATE_DIR = original;
+    }
+  });
+
+  it("removes only standards state older than one day when the session starts", async () => {
+    const project = gateProject();
+    const old = join(project.state, "standards-old.txt");
+    const fresh = join(project.state, "standards-fresh.txt");
+    const unrelated = join(project.state, "touched-old.txt");
+    writeFileSync(old, "rust loaded\n");
+    writeFileSync(fresh, "rust prompted\n");
+    writeFileSync(unrelated, "src/main.rs\n");
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    utimesSync(old, twoDaysAgo, twoDaysAgo);
+    utimesSync(unrelated, twoDaysAgo, twoDaysAgo);
+
+    const previous = process.env.KIT_STATE_DIR;
+    process.env.KIT_STATE_DIR = project.state;
+    try {
+      const registered = registerWithState(project);
+      const ctx = { cwd: project.cwd, hasUI: false, sessionManager: { getSessionId: () => "S1" } };
+      await registered.get("session_start")!({}, ctx);
+      expect(existsSync(old)).toBeFalse();
+      expect(existsSync(fresh)).toBeTrue();
+      expect(existsSync(unrelated)).toBeTrue();
+    } finally {
+      if (previous === undefined) delete process.env.KIT_STATE_DIR;
+      else process.env.KIT_STATE_DIR = previous;
+    }
   });
 });

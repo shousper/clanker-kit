@@ -1,5 +1,8 @@
 export type NormalizedEvent =
   | { kind: "tool_call"; tool: string; input: Record<string, unknown>; id?: string }
+  /** The outcome of the tool_call with the same `id`. `text` is the tool's own output (or
+   *  the error/hook-block message), never assistant prose. */
+  | { kind: "tool_result"; id: string; isError: boolean; text: string }
   | { kind: "text"; text: string }
   | { kind: "fallback"; from: string; to: string }
   | { kind: "error"; message: string };
@@ -51,4 +54,34 @@ export interface Harness {
 
 export function isToolCall(e: NormalizedEvent, tool: string): boolean {
   return e.kind === "tool_call" && e.tool === tool;
+}
+
+export type ToolCallEvent = Extract<NormalizedEvent, { kind: "tool_call" }>;
+export type ToolResultEvent = Extract<NormalizedEvent, { kind: "tool_result" }>;
+
+/** Flattens a tool result's `content` (a string, or an array of `{type:"text"}` blocks) to text. */
+export function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block && typeof block === "object" && "type" in block && block.type === "text" && "text" in block) {
+      const text = String(block.text ?? "");
+      if (text.length > 0) parts.push(text);
+    }
+  }
+  return parts.join("\n");
+}
+
+/** The result recorded for a call, or undefined when the run ended before one arrived. */
+export function resultFor(events: NormalizedEvent[], call: ToolCallEvent): ToolResultEvent | undefined {
+  if (call.id === undefined) return undefined;
+  return events.find((e): e is ToolResultEvent => e.kind === "tool_result" && e.id === call.id);
+}
+
+/** True only when the call produced a result that is not an error. A call with no result
+ *  (killed mid-run) or a failed one (bad path, hook block) did not do what it asked. */
+export function toolSucceeded(events: NormalizedEvent[], call: ToolCallEvent): boolean {
+  const result = resultFor(events, call);
+  return result !== undefined && !result.isError;
 }
