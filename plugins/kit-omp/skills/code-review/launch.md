@@ -7,7 +7,7 @@ ordinary subagent of your session, visible in the Agents Hub.
 
 ## Launch
 
-1. Resolve the skill directory: in the `bash` tool run `echo skill://code-review`; use the
+1. Resolve the skill directory: in the `bash` tool run `realpath skill://code-review`; use the
    printed path as `SKILL_BASE` below.
 2. Run this cell with `eval`, `language: "js"`, `timeout: 0`:
 

@@ -4,7 +4,7 @@ The runner is `plan.workflow.mjs` in this skill's directory. Import it from one 
 
 ## Launch
 
-1. Resolve the skill directory: in the `bash` tool run `echo skill://work`. It prints the real path (under OMP's plugin cache). Use that path as `SKILL_BASE` below; the `skill://` form does not work inside `import()`.
+1. Resolve the skill directory: in the `bash` tool run `realpath skill://work`. It prints the real path; `echo` prints the URI unchanged, because OMP resolves internal URIs only in path arguments. Use that path as `SKILL_BASE` below; the `skill://` form does not work inside `import()`.
 2. Write the args to `local://stories/plan-RUN_SLUG.json` with the `write` tool: a JSON array with one entry per claimed story.
 
    ```json
@@ -38,7 +38,7 @@ Run `omp config get eval.autoBackground.enabled` in `bash` once per session. Whe
 
 The delivered snapshot truncates long plans, so never copy `plan` or `batches` out of it. The runner writes every planned story to two files, and those are what you use:
 
-- `local://stories/ST-ID.plan.md` — the plan. Resolve the path with `echo local://stories/ST-ID.plan.md` in `bash` and pass it straight to `story update ST-ID --plan-file <path>`.
+- `local://stories/ST-ID.plan.md` — the plan. Resolve the path with `realpath local://stories/ST-ID.plan.md` in `bash` and pass it straight to `story update ST-ID --plan-file <path>`.
 - `local://stories/ST-ID.plan.json` — `{ id, plan, batches }`. In the build-flow cell, load the batches from it: `JSON.parse(await read("local://stories/ST-ID.plan.json")).batches`.
 
 Read the snapshot only for each story's `status` and, for `failed`, its `error`.

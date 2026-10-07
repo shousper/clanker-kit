@@ -8,9 +8,10 @@ Agents Hub, and its `phase()`/`log()` lines stream into the eval call.
 
 ## Launch
 
-1. Resolve the skill directory: in the `bash` tool run `echo skill://build-flow`. It prints
-   the real path (under OMP's plugin cache). Use that path as `SKILL_BASE` below; the
-   `skill://` form does not work inside `import()`.
+1. Resolve the skill directory: in the `bash` tool run `realpath skill://build-flow`. It prints
+   the real path; `echo` prints the URI unchanged, because OMP resolves internal URIs only in
+   path arguments. Use that path as `SKILL_BASE` below; the `skill://` form does not work
+   inside `import()`.
 2. Write the args to `local://build-flow/RUN_SLUG.json` with the `write` tool. The file form
    keeps the cell small and lets you resume by editing a file (`run()` also accepts the same
    object inline):
