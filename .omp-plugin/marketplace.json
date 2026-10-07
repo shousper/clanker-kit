@@ -22,6 +22,12 @@
       "description": "Story-based autonomous workflow: markdown story board, typed verification gates, goal loop, parallel same-machine workers",
       "version": "0.2.1",
       "source": "./plugins/stories-omp"
+    },
+    {
+      "name": "reports",
+      "description": "Slash-command reports over your local omp history: token spend, skill usage, and words read and written",
+      "version": "0.1.0",
+      "source": "./plugins/reports-omp"
     }
   ]
 }

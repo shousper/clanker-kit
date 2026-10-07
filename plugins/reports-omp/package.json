@@ -1,0 +1,24 @@
+{
+  "name": "reports-omp",
+  "version": "0.1.0",
+  "private": true,
+  "omp": {
+    "features": {
+      "spend": {
+        "description": "/reports:spend: token spend and API-equivalent $ per model and provider",
+        "default": true,
+        "extensions": ["./extensions/spend/index.ts"]
+      },
+      "skills": {
+        "description": "/reports:skills: skill loads, failed reads, unused skills, and standards adoption",
+        "default": true,
+        "extensions": ["./extensions/skills/index.ts"]
+      },
+      "words": {
+        "description": "/reports:words: words you read and wrote, in book-sized units",
+        "default": true,
+        "extensions": ["./extensions/words/index.ts"]
+      }
+    }
+  }
+}

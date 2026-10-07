@@ -38,3 +38,6 @@ export const WRITING_VALE_DIR = resolve(WRITING_ROOT, "vale");
 export const WRITING_CLAUDE_ROOT = resolve(ROOT, "plugins/writing-claude");
 export const WRITING_OMP_ROOT = resolve(ROOT, "plugins/writing-omp");
 export const WRITING_ROOTS: Record<"claude" | "omp", string> = { claude: WRITING_CLAUDE_ROOT, omp: WRITING_OMP_ROOT };
+
+// Reports: an OMP-only plugin whose extensions and shared lib live entirely inside it.
+export const REPORTS_OMP_ROOT = resolve(ROOT, "plugins/reports-omp");

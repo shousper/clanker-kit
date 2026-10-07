@@ -1,10 +1,11 @@
 # clanker-kit
 
-A plugin marketplace for Claude Code and OMP hosting three plugins:
+A plugin marketplace for Claude Code and OMP hosting four plugins:
 
 - **`kit`** (`plugins/kit-claude/`, `plugins/kit-omp/`) — a complete development workflow, from brainstorming ideas through design, implementation, code review, and branch completion.
 - **`stories`** (`plugins/stories-claude/`, `plugins/stories-omp/`) — a story-based autonomous workflow built on kit: a repo-native markdown story board with typed verification gates and a goal loop that works the board until it is drained. Each plugin's README covers its harness; the shared guide is [shared/stories/README.md](shared/stories/README.md).
 - **`writing`** (`plugins/writing-claude/`, `plugins/writing-omp/`) — an opt-in developer-documentation writing voice for every reply and file, a documentation-authoring skill, and an advisory Vale lint hook. Independent of kit.
+- **`reports`** (`plugins/reports-omp/`, OMP only) — slash commands that report on your local omp history: token spend, skill usage, and words read and written. Independent of kit; see [its README](plugins/reports-omp/README.md).
 
 The remainder of this README documents `kit`.
 
@@ -160,6 +161,7 @@ The plugins version and release independently. Tags follow the `<plugin>--vX.Y.Z
 - **kit** — `plugins/kit-claude/.claude-plugin/plugin.json` (`kit-claude--vX.Y.Z`) and `plugins/kit-omp/.omp-plugin/plugin.json` (`kit-omp--vX.Y.Z`)
 - **stories** — `plugins/stories-claude/.claude-plugin/plugin.json` (`stories-claude--vX.Y.Z`) and `plugins/stories-omp/.omp-plugin/plugin.json` (`stories-omp--vX.Y.Z`)
 - **writing** — `plugins/writing-claude/.claude-plugin/plugin.json` and `plugins/writing-omp/.omp-plugin/plugin.json`
+- **reports** — `plugins/reports-omp/.omp-plugin/plugin.json` (`reports-omp--vX.Y.Z`)
 
 To release: bump the version in the plugin's manifest **and** its catalogue entry (`.claude-plugin/marketplace.json` for a Claude plugin, `.omp-plugin/marketplace.json` for an OMP plugin), merge, then tag the merge commit.
 

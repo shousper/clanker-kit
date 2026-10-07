@@ -1,0 +1,12 @@
+{
+  "name": "reports",
+  "description": "Slash-command reports over your local omp history: token spend, skill usage, and words read and written.",
+  "version": "0.1.0",
+  "author": {
+    "name": "shousper"
+  },
+  "homepage": "https://github.com/shousper/clanker-kit",
+  "repository": "https://github.com/shousper/clanker-kit",
+  "license": "MIT",
+  "keywords": ["omp", "reports", "usage", "spend", "skills"]
+}
