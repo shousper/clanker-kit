@@ -9,33 +9,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: jdx/mise-action@v5
+        with:
+          install_args: bun jq shellcheck vale ruff
       - uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: bun-${{ hashFiles('bun.lock') }}
           restore-keys: bun-
-      - run: bun install
-      - run: bun run test
+      - run: mise run test
 
   plugin-validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - run: npm install -g @anthropic-ai/claude-code
-      - run: claude plugin validate .claude-plugin/marketplace.json
-      # Every Claude plugin symlinks shared/ content into its tree. The validator
-      # does not follow symlinks and emits a warning per symlinked component;
-      # --strict would promote those warnings to hard failures even though the
-      # validator's own message confirms a real session does follow the link.
-      # Do not add --strict here without first resolving the symlinks.
-      #
-      # Plugins are discovered by manifest so a rename (plugins/stories became
-      # plugins/stories-claude) cannot leave a stale path here. The *-omp plugins
-      # have no .claude-plugin manifest; Claude Code has nothing to validate for
-      # them and this repo's own static tests cover them instead (plugin.test.ts,
-      # symlink-integrity.test.ts, omp-extension.test.ts, omp-workflows.test.ts).
-      - run: |
-          for manifest in plugins/*/.claude-plugin/plugin.json; do
-            claude plugin validate "${manifest%/.claude-plugin/plugin.json}"
-          done
+      - uses: jdx/mise-action@v5
+      - run: mise run validate

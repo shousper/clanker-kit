@@ -5,6 +5,8 @@
 # a handler reports (a first-detection notice, or non-blocking lint/check
 # findings); silent + exit 0 on a clean run. Exits 0 regardless of individual
 # formatter/checker failures — this NEVER blocks the caller.
+# handle_* functions and their helpers are called indirectly by run().
+# shellcheck disable=SC2329
 set -uo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -319,15 +321,116 @@ handle_rust_checks() {
   printf '%b' "$findings"
 }
 
+# Nearest ancestor dir (inclusive) whose ruff config applies: ruff.toml,
+# .ruff.toml, or a pyproject.toml with a [tool.ruff] table. Prints it, or returns 1.
+kit_ruff_root() {  # kit_ruff_root <dir>
+  local d="$1"
+  while :; do
+    { [ -f "$d/ruff.toml" ] || [ -f "$d/.ruff.toml" ]; } && { printf '%s' "$d"; return 0; }
+    if [ -f "$d/pyproject.toml" ] && grep -q '^\[tool\.ruff' "$d/pyproject.toml" 2>/dev/null; then
+      printf '%s' "$d"; return 0
+    fi
+    [ "$d" = "/" ] && return 1
+    d="${d%/*}"; [ -n "$d" ] || d="/"
+  done
+}
+
+# Python: ruff format, then ruff check --fix (safe fixes only), once per configured
+# project. Projects without a ruff config are left alone; they may use another tool.
+handle_ruff() {
+  [ -n "$1" ] || return 0
+  local files f root ruff out findings=""
+  mapfile -t files <<<"$1"
+  local -a roots=()
+  declare -A by_root=()
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || continue
+    root="$(kit_ruff_root "$(dirname "$f")")" || continue
+    [ -n "${by_root[$root]:-}" ] || roots+=("$root")
+    by_root[$root]="${by_root[$root]:-}${f}"$'\n'
+  done
+  [ "${#roots[@]}" -gt 0 ] || return 0
+  for root in "${roots[@]}"; do
+    ruff="$root/.venv/bin/ruff"
+    [ -x "$ruff" ] || ruff="$(command -v ruff)" || continue
+    mapfile -t files <<<"${by_root[$root]%$'\n'}"
+    # --force-exclude: explicit paths bypass `exclude`/`extend-exclude` unless it is set, and the
+    # project excludes generated code for a reason.
+    (cd "$root" && "$ruff" format --force-exclude "${files[@]}") >/dev/null 2>&1 || true
+    if ! out="$(cd "$root" && "$ruff" check --fix --force-exclude --output-format concise "${files[@]}" 2>&1)"; then
+      [ -n "$out" ] && findings="${findings}ruff (${root}):\n${out}\n\n"
+    fi
+  done
+  [ -z "$findings" ] && return 0
+  printf 'ruff reported issues:\n'
+  printf '%b' "$findings"
+}
+
+# C and C++, only where an ancestor has .clang-format or _clang-format. Tracked files go through
+# `git clang-format`, which reformats only the lines changed since HEAD so existing code keeps its
+# local style. It runs once per repository with all that repository's tracked files, and with
+# --force because it otherwise refuses files with unstaged changes, which an edited file always has.
+# `git clang-format` is a separate executable (git-clang-format): without it, tracked files are left
+# alone rather than reformatted whole, which would rewrite code the agent did not touch. Untracked
+# files have no baseline, so they get `clang-format -i` on the whole file.
+handle_clang_format() {
+  [ -n "$1" ] || return 0
+  command -v clang-format >/dev/null 2>&1 || return 0
+  local files f dir top prefix repo has_gcf=""
+  local -a untracked=() repos=() rfiles=()
+  declare -A by_repo=()
+  command -v git-clang-format >/dev/null 2>&1 && has_gcf=1
+  mapfile -t files <<<"$1"
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || continue
+    dir="$(dirname "$f")"
+    kit_nearest_dir "$dir" .clang-format >/dev/null \
+      || kit_nearest_dir "$dir" _clang-format >/dev/null || continue
+    if git -C "$dir" ls-files --error-unmatch -- "$(basename "$f")" >/dev/null 2>&1; then
+      [ -n "$has_gcf" ] || continue
+      { IFS= read -r top; IFS= read -r prefix; } < <(git -C "$dir" rev-parse --show-toplevel --show-prefix 2>/dev/null)
+      [ -n "$top" ] || continue
+      [ -n "${by_repo[$top]:-}" ] || repos+=("$top")
+      by_repo[$top]="${by_repo[$top]:-}${prefix}$(basename "$f")"$'\n'
+    else
+      untracked+=("$f")
+    fi
+  done
+  if [ "${#repos[@]}" -gt 0 ]; then
+    for repo in "${repos[@]}"; do
+      mapfile -t rfiles <<<"${by_repo[$repo]%$'\n'}"
+      git -C "$repo" clang-format --force --quiet -- "${rfiles[@]}" >/dev/null 2>&1 || true
+    done
+  fi
+  [ "${#untracked[@]}" -gt 0 ] || return 0
+  clang-format -i "${untracked[@]}" >/dev/null 2>&1 || true
+}
+
 findings=""
 add() { [ -n "$1" ] && findings="${findings}${1}"$'\n\n'; }
 
-add "$(handle_gofmt       "$(select_files '*.go')")"
-add "$(handle_rustfmt     "$(select_files '*.rs')")"
-add "$(handle_hcl         "$(select_files '*.tf' '*.tofu' '*.tofu.json' '*.tfvars')")"
-add "$(handle_eslint      "$(select_files '*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs')")"
-add "$(handle_tsc         "$(select_files '*.ts' '*.tsx')")"
-add "$(handle_rust_checks "$(select_files '*.rs' '*Cargo.toml')")"
+# KIT_FORMAT_SKIP: space- or comma-separated handler names to skip, or "all".
+kit_format_skipped() {  # kit_format_skipped <handler>
+  local list=" ${KIT_FORMAT_SKIP:-} "
+  list="${list//,/ }"
+  case "$list" in *" all "*|*" $1 "*) return 0 ;; esac
+  return 1
+}
+
+run() {  # run <handler> <glob>...
+  local name="$1"; shift
+  kit_format_skipped "$name" && return 0
+  add "$("handle_${name}" "$(select_files "$@")")"
+}
+
+run gofmt         '*.go'
+run rustfmt       '*.rs'
+run hcl           '*.tf' '*.tofu' '*.tofu.json' '*.tfvars'
+run eslint        '*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs'
+run tsc           '*.ts' '*.tsx'
+run rust_checks   '*.rs' '*Cargo.toml'
+run ruff          '*.py' '*.pyi'
+run clang_format  '*.cpp' '*.cc' '*.cxx' '*.hpp' '*.hh' '*.hxx' '*.ipp' '*.tpp' '*.inl' '*.h'
 
 findings="${findings%$'\n\n'}"
 [ -z "$findings" ] && exit 0

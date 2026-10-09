@@ -8,7 +8,7 @@
     {
       "name": "kit",
       "description": "A review-first development workflow: brainstorming, planning, build, and review skills, plus session hooks and code standards, with a staged build-flow that runs independent spec and quality review gates before every change lands.",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "source": "./plugins/kit-omp"
     },
     {
@@ -26,7 +26,7 @@
     {
       "name": "reports",
       "description": "Slash-command reports over your local omp history: token spend, skill usage, and words read and written",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "source": "./plugins/reports-omp"
     }
   ]

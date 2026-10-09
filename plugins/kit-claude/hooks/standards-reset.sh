@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code SessionStart (clear|compact) hook: returns every language to
+# Claude Code SessionStart (clear|compact) hook: returns every standards unit to
 # "unseen" for this agent key, because the standards text a read put into
 # context is gone after /clear or compaction. The matcher in hooks.json decides
 # when this runs. SessionStart fires on the main thread, so the key is the

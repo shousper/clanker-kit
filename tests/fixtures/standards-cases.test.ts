@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, it, expect } from "bun:test";
 import { cp, mkdir, mkdtemp, rm, stat, writeFile } from "fs/promises";
 import { tmpdir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { HOOKS_DIR, KIT_CLAUDE_ROOT, KIT_OMP_ROOT } from "../utils/paths";
 import { STANDARDS_CASES } from "./standards-cases";
+import { unitFile, unitsFor, type StandardsUnit } from "../utils/standards-trace";
 
 const FIXTURES = resolve(import.meta.dir);
 const GATE = join(HOOKS_DIR, "standards-gate.sh");
@@ -16,9 +17,12 @@ beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), "standards-cases-"));
   // Stub standards so the check depends on the fixtures and the gate's language table only.
   pluginRoot = join(tmp, "plugin");
-  for (const { lang } of STANDARDS_CASES) {
-    await mkdir(join(pluginRoot, "code-standards", lang), { recursive: true });
-    await writeFile(join(pluginRoot, "code-standards", lang, "CLAUDE.md"), `# ${lang} stub\n`);
+  const stubbed = new Set<StandardsUnit>(["scope"]);
+  for (const c of STANDARDS_CASES) for (const unit of unitsFor(c.lang, c.facet)) stubbed.add(unit);
+  for (const unit of stubbed) {
+    const file = join(pluginRoot, unitFile(unit));
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, `# ${unit} stub\n`);
   }
 });
 
@@ -32,7 +36,7 @@ async function copyFixture(workspace: string): Promise<string> {
 
 describe("standards eval cases", () => {
   for (const c of STANDARDS_CASES) {
-    describe(c.lang, () => {
+    describe(`${c.lang}${c.facet ? `:${c.facet}` : ""}`, () => {
       it("does not already satisfy its prompt, so a pass needs a real edit", async () => {
         expect(await c.landed(await copyFixture(c.workspace))).toBe(false);
       });
@@ -46,7 +50,9 @@ describe("standards eval cases", () => {
         });
         const [stdout, code] = [await new Response(proc.stdout).text(), await proc.exited];
         expect(code).toBe(2);
-        expect(stdout).toContain(join(pluginRoot, "code-standards", c.lang, "CLAUDE.md"));
+        for (const unit of unitsFor(c.lang, c.facet)) {
+          expect(stdout).toContain(join(pluginRoot, unitFile(unit)));
+        }
       });
     });
   }
@@ -64,8 +70,12 @@ describe("standards eval cases", () => {
 
   it("is backed by real standards in both plugins, never a stub the gate would send an agent to read", async () => {
     for (const root of [KIT_CLAUDE_ROOT, KIT_OMP_ROOT]) {
-      for (const { lang } of STANDARDS_CASES) {
-        const file = join(root, "code-standards", lang, "CLAUDE.md");
+      const files = [
+        join(root, unitFile("scope")),
+        ...STANDARDS_CASES.map((c) => join(root, unitFile(c.lang))),
+        ...STANDARDS_CASES.filter((c) => c.facet).map((c) => join(root, unitFile(`${c.lang}:project`))),
+      ];
+      for (const file of files) {
         expect((await stat(file)).size, file).toBeGreaterThan(1_000);
       }
     }
