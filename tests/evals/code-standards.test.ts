@@ -7,10 +7,12 @@ import { selectHarnesses, type Harness, type NormalizedEvent } from "../utils/ha
 import {
   analyseStandards,
   delegationViolations,
+  gateStateViolations,
   readGateStates,
   renderTrace,
   standardsViolations,
   topLevelSessionId,
+  unitsFor,
 } from "../utils/standards-trace";
 import { STANDARDS_CASES, type StandardsCase } from "../fixtures/standards-cases";
 
@@ -22,6 +24,8 @@ const PER_TRIAL_TIMEOUT = 120_000;
 const MAX_TURNS = 15;
 const SKIP_CLEANUP = process.env.SKIP_CLEANUP === "1";
 const RUN_EVALS = process.env.RUN_EVALS === "1";
+// Prints every trial's tool trace, passing ones included, to audit how the agent reached its pass.
+const TRACE = process.env.STANDARDS_TRACE === "1";
 
 interface TrialReport extends TrialResult {
   violations: string[];
@@ -41,7 +45,7 @@ async function runTrial(
   harness: Harness,
   c: StandardsCase,
   prompt: string,
-  judge: (ctx: { events: NormalizedEvent[]; stdout: string; stateDir: string }) => Promise<string[]>,
+  judge: (ctx: { events: NormalizedEvent[]; stdout: string; stateDir: string; cwd: string }) => Promise<string[]>,
 ): Promise<TrialReport> {
   const ws = await createWorkspace({ workspace: c.workspace });
   const stateDir = join(ws.configDir, "kit", "state");
@@ -52,13 +56,14 @@ async function runTrial(
       cwd: ws.cwd,
       env: { ...ws.env, KIT_STATE_DIR: stateDir },
       pluginDirs: [harness.pluginRoot],
+      isolateExtensions: true,
       ephemeral: true,
       dangerouslySkipPermissions: true,
     });
     const violations: string[] = [];
     if (result.exitCode === 124) violations.push("the run timed out");
     if (result.events.some((e) => e.kind === "error")) violations.push("the harness reported an error event");
-    violations.push(...(await judge({ events: result.events, stdout: result.stdout, stateDir })));
+    violations.push(...(await judge({ events: result.events, stdout: result.stdout, stateDir, cwd: ws.cwd })));
     if (!(await c.landed(ws.cwd))) violations.push(`the edit to ${c.target} did not land`);
     return {
       pass: violations.length === 0,
@@ -73,6 +78,16 @@ async function runTrial(
   }
 }
 
+const caseLabel = (c: StandardsCase): string => `${c.lang}${c.facet ? `:${c.facet}` : ""}`;
+
+/** Keeps a trial's report and, with STANDARDS_TRACE=1, prints it labeled with harness, case and trial number. */
+function record(reports: TrialReport[], report: TrialReport, harness: Harness, label: string): void {
+  reports.push(report);
+  if (!TRACE) return;
+  const violations = report.violations.map((v) => `\n    - ${v}`).join("");
+  console.log(`[standards trace] ${harness.id} ${label} trial ${reports.length} [${report.pass ? "PASS" : "FAIL"}]${violations}\n${report.trace}`);
+}
+
 function failure(label: string, harness: Harness, c: StandardsCase, reports: TrialReport[], invalid: boolean): Error {
   const body = reports
     .map(
@@ -84,25 +99,30 @@ function failure(label: string, harness: Harness, c: StandardsCase, reports: Tri
     )
     .join("\n");
   return new Error(
-    `${invalid ? "[INVALID RUN] model fallback; " : ""}${label} failed on ${harness.id}/${c.lang} (every trial must pass)\n${body}`,
+    `${invalid ? "[INVALID RUN] model fallback; " : ""}${label} failed on ${harness.id}/${caseLabel(c)} (every trial must pass)\n${body}`,
   );
 }
 
 function runStandardsSuite(harness: Harness) {
   describe.skipIf(!RUN_EVALS)(`standards gate (${harness.id})`, () => {
     for (const c of STANDARDS_CASES) {
+      const units = unitsFor(c.lang, c.facet);
       it(
-        `${c.lang}: reads the standards once, before the first edit, blocked at most once`,
+        `${caseLabel(c)}: reads each standards unit once, before the first edit, blocked at most once`,
         async () => {
           const reports: TrialReport[] = [];
           const outcome = await runTrials({
             trials: TRIALS,
             requiredPasses: TRIALS,
             run: async () => {
-              const report = await runTrial(harness, c, c.prompt, async ({ events }) =>
-                standardsViolations(analyseStandards(harness, events, c.lang), c.lang),
-              );
-              reports.push(report);
+              const report = await runTrial(harness, c, c.prompt, async ({ events, stdout, stateDir, cwd }) => {
+                const analysis = analyseStandards(harness, events, c.lang, units, { pluginRoot: harness.pluginRoot, cwd });
+                return [
+                  ...standardsViolations(analysis, c.lang, units),
+                  ...gateStateViolations(await readGateStates(stateDir), topLevelSessionId(harness, stdout), analysis.units),
+                ];
+              });
+              record(reports, report, harness, caseLabel(c));
               return report;
             },
           });
@@ -128,9 +148,9 @@ function runStandardsSuite(harness: Harness) {
           requiredPasses: TRIALS,
           run: async () => {
             const report = await runTrial(harness, go, prompt, async ({ stdout, stateDir }) =>
-              delegationViolations(await readGateStates(stateDir), topLevelSessionId(harness, stdout), "go"),
+              delegationViolations(await readGateStates(stateDir), topLevelSessionId(harness, stdout), go.lang, unitsFor(go.lang, go.facet)),
             );
-            reports.push(report);
+            record(reports, report, harness, `${caseLabel(go)} (subagent)`);
             return report;
           },
         });

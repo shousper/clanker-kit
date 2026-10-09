@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+#MISE description="Validate every OMP plugin in an isolated omp home (link, doctor, rpc skill discovery; no LLM calls)"
+#
+# The OMP counterpart of `claude plugin validate`. It never calls a model and
+# never touches the real ~/.omp: every omp command runs with HOME pointing at
+# a temporary directory and with --profile ci.
+#
+# Plugins are discovered by their .omp-plugin/plugin.json manifest. Each one
+# is linked into its own fresh home, so a failure always names the plugin
+# that caused it. The task then checks that:
+#   - omp can link the plugin;
+#   - `omp plugin doctor` reports it ok at the manifest's version;
+#   - omp lists every skill the plugin declares in its system prompt (an rpc
+#     `get_state` call, answered without a model request);
+#   - omp loads its extension without errors.
+#
+# The rpc probe runs from an empty directory. From the repo, omp discovers the
+# repo's skills by itself, which would make the skill check pass vacuously.
+#
+# PLUGINS_DIR overrides the plugins root (default: the repo's plugins/).
+# RPC_TIMEOUT_SECONDS bounds each rpc run (default: 60).
+set -euo pipefail
+
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+plugins_dir=${PLUGINS_DIR:-$repo/plugins}
+rpc_timeout_seconds=${RPC_TIMEOUT_SECONDS:-60}
+
+sandbox=$(mktemp -d "${TMPDIR:-/tmp}/validate-omp.XXXXXX")
+trap 'rm -rf "$sandbox"' EXIT
+mkdir "$sandbox/cwd"
+
+# Print the `name:` value from a SKILL.md frontmatter block.
+skill_name() {
+  awk '
+    NR == 1 && $0 != "---" { exit }
+    NR > 1 && $0 == "---" { exit }
+    /^name:/ {
+      sub(/^name:[ \t]*/, "")
+      gsub(/["'\'']/, "")
+      sub(/[ \t]+$/, "")
+      print
+      exit
+    }
+  ' "$1"
+}
+
+# Accumulated "FAIL ..." lines, one per failed check.
+failures=""
+failed=0
+label=""
+
+# fail CHECK MESSAGE: record a failure for the plugin being checked.
+fail() {
+  failures="${failures}validate:omp: FAIL ${label} [${1}]: ${2}"$'\n'
+  failed=$((failed + 1))
+}
+
+# check_plugin DIR: validate one plugin; record failures, print an ok line.
+check_plugin() {
+  local dir=$1 home name version want skill_file declared
+  local link_output doctor_json entry status message
+  local rpc_pid polls timed_out line
+  local before=$failed
+
+  label=$(basename "$dir")
+  home="$sandbox/home.$label"
+  mkdir "$home"
+
+  name=$(jq -r '.name // empty' "$dir/package.json" 2>/dev/null || true)
+  version=$(jq -r '.version // empty' "$dir/.omp-plugin/plugin.json" 2>/dev/null || true)
+  if [ -z "$name" ]; then
+    fail manifest "$dir/package.json is missing or has no name"
+    return
+  fi
+  if [ -z "$version" ]; then
+    fail manifest "$dir/.omp-plugin/plugin.json has no version"
+    return
+  fi
+  want="v$version"
+
+  # Skill names the plugin declares; globbing follows symlinked skill dirs.
+  : >"$sandbox/skills.$label"
+  for skill_file in "$dir"/skills/*/SKILL.md; do
+    [ -f "$skill_file" ] || continue
+    declared=$(skill_name "$skill_file")
+    if [ -z "$declared" ]; then
+      fail skills "$skill_file has no name in its frontmatter"
+    else
+      printf '%s\n' "$declared" >>"$sandbox/skills.$label"
+    fi
+  done
+
+  if ! link_output=$(HOME="$home" omp --profile ci plugin link "$dir" </dev/null 2>&1); then
+    fail link "omp plugin link failed: $link_output"
+    return
+  fi
+
+  # Doctor: the plugin is ok at its manifest version and nothing errors.
+  if ! doctor_json=$(HOME="$home" omp --profile ci plugin doctor --json </dev/null 2>"$sandbox/doctor.err"); then
+    fail doctor "omp plugin doctor failed: $(cat "$sandbox/doctor.err")"
+  elif ! jq -e 'type == "array"' <<<"$doctor_json" >/dev/null 2>&1; then
+    fail doctor "omp plugin doctor --json did not emit a JSON array"
+  else
+    message=$(jq -r '.[] | select(.status == "error") | "\(.name): \(.message)"' <<<"$doctor_json")
+    if [ -n "$message" ]; then
+      fail doctor "doctor reported errors: $message"
+    fi
+    entry=$(jq -c --arg n "plugin:$name" '[.[] | select(.name == $n)][0] // empty' <<<"$doctor_json")
+    if [ -z "$entry" ]; then
+      fail doctor "doctor has no plugin:$name entry"
+    else
+      status=$(jq -r '.status' <<<"$entry")
+      message=$(jq -r '.message' <<<"$entry")
+      if [ "$status" != "ok" ]; then
+        fail doctor "doctor status is $status: $message"
+      elif [ "$message" != "$want" ]; then
+        fail doctor "doctor reports $message but the manifest version is $want"
+      fi
+    fi
+  fi
+
+  # rpc get_state from an empty directory. Closing stdin after the request
+  # ends the session; the poll loop bounds the run time portably (macOS has
+  # no `timeout`).
+  printf '%s\n' '{"id":"validate-omp","type":"get_state"}' |
+    HOME="$home" omp --profile ci --cwd "$sandbox/cwd" --mode rpc --no-ui --no-session \
+      >"$sandbox/rpc.out" 2>"$sandbox/rpc.err" &
+  rpc_pid=$!
+  polls=$((rpc_timeout_seconds * 10))
+  while [ "$polls" -gt 0 ] && kill -0 "$rpc_pid" 2>/dev/null; do
+    sleep 0.1
+    polls=$((polls - 1))
+  done
+  timed_out=0
+  if kill -0 "$rpc_pid" 2>/dev/null; then
+    timed_out=1
+    kill -9 "$rpc_pid" 2>/dev/null || true
+  fi
+  wait "$rpc_pid" 2>/dev/null || true
+
+  if [ "$timed_out" -eq 1 ]; then
+    fail rpc "no get_state answer within ${rpc_timeout_seconds}s"
+  elif ! grep -q '"id":"validate-omp"' "$sandbox/rpc.out"; then
+    fail rpc "omp rpc mode did not answer get_state: $(cat "$sandbox/rpc.err")"
+  elif ! jq -r 'select(.id == "validate-omp") | .data.systemPrompt
+        | if type == "array" then join("\n") else (. // "") end' "$sandbox/rpc.out" |
+    awk '/^- / { sub(/^- /, ""); sub(/:.*/, ""); print }' >"$sandbox/prompt.skills"; then
+    fail rpc "could not read the system prompt from the get_state answer"
+  else
+    while IFS= read -r declared; do
+      [ -n "$declared" ] || continue
+      if ! grep -Fxq -- "$declared" "$sandbox/prompt.skills"; then
+        fail skills "omp did not discover skill '$declared'"
+      fi
+    done <"$sandbox/skills.$label"
+  fi
+
+  # omp logs extension load failures to stderr; rpc does not return them.
+  while IFS= read -r line; do
+    fail extension "$line"
+  done < <(grep 'Failed to load extension' "$sandbox/rpc.err" || true)
+
+  if [ "$failed" -eq "$before" ]; then
+    echo "validate:omp: ok $label $want: linked, doctor ok, $(wc -l <"$sandbox/skills.$label" | tr -d ' ') skills discovered, extension loaded"
+  fi
+}
+
+found=0
+for manifest in "$plugins_dir"/*/.omp-plugin/plugin.json; do
+  [ -f "$manifest" ] || continue
+  found=$((found + 1))
+  check_plugin "$(dirname "$(dirname "$manifest")")"
+done
+if [ "$found" -eq 0 ]; then
+  echo "validate:omp: no plugins/*/.omp-plugin/plugin.json found under $plugins_dir" >&2
+  exit 1
+fi
+
+if [ "$failed" -gt 0 ]; then
+  printf '%s' "$failures" >&2
+  exit 1
+fi

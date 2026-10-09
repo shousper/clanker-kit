@@ -10,6 +10,8 @@ import type { StandardsLang } from "../utils/standards-trace";
  */
 export interface StandardsCase {
   lang: StandardsLang;
+  /** Set when the target is a project-configuration file, so the gate also asks for the language's project unit. */
+  facet?: "project";
   workspace: WorkspaceVariant;
   /** Edited file, relative to the workspace root. */
   target: string;
@@ -59,6 +61,30 @@ export const STANDARDS_CASES: StandardsCase[] = [
     target: "src/inventory/stock.py",
     prompt: `In src/inventory/stock.py, add a function named needs_restock that takes units_on_hand and reorder_level as ints and returns True when units_on_hand is below reorder_level. ${NO_SHELL}`,
     landed: async (cwd) => /def needs_restock\(/.test(await read(cwd, "src/inventory/stock.py")),
+  },
+  {
+    lang: "python",
+    facet: "project",
+    workspace: "python",
+    target: "pyproject.toml",
+    prompt: `In pyproject.toml, add description = "Inventory tracking" to the [project] table. ${NO_SHELL}`,
+    landed: async (cwd) => (await read(cwd, "pyproject.toml")).includes("Inventory tracking"),
+  },
+  {
+    lang: "rust",
+    facet: "project",
+    workspace: "rust",
+    target: "Cargo.toml",
+    prompt: `In Cargo.toml, add description = "Config reader" to the [package] table. ${NO_SHELL}`,
+    landed: async (cwd) => (await read(cwd, "Cargo.toml")).includes("Config reader"),
+  },
+  {
+    lang: "cpp",
+    facet: "project",
+    workspace: "cpp",
+    target: "CMakeLists.txt",
+    prompt: `In CMakeLists.txt, add set(CMAKE_EXPORT_COMPILE_COMMANDS ON) on the line right after the project() call. ${NO_SHELL}`,
+    landed: async (cwd) => /^project\([^\n]*\)\r?\nset\(CMAKE_EXPORT_COMPILE_COMMANDS ON\)/m.test(await read(cwd, "CMakeLists.txt")),
   },
   {
     lang: "cpp",

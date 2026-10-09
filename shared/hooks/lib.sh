@@ -3,8 +3,8 @@
 # never executed directly. No top-level side effects. Plain args/env in,
 # plain text out — no stdin JSON, no harness protocol of any kind.
 #
-# The formatter/checker table (gofmt, rustfmt, hcl, eslint, tsc, cargo) lives
-# in format-files.sh, not here — that is its single source.
+# The formatter/checker table (gofmt, rustfmt, hcl, eslint, tsc, cargo, ruff,
+# clang-format) lives in format-files.sh, not here — that is its single source.
 
 kit_state_dir() {  # KIT_STATE_DIR wins outright; else ~/.kit/state. Each harness's
   printf '%s' "${KIT_STATE_DIR:-$HOME/.kit/state}"   # protocol wrapper sets KIT_STATE_DIR.
@@ -22,6 +22,7 @@ kit_is_handled() {  # kit_is_handled <path>
   case "$1" in
     */Cargo.toml|Cargo.toml) return 0 ;;
     *.go|*.rs|*.js|*.jsx|*.ts|*.tsx|*.mjs|*.cjs|*.tf|*.tofu|*.tofu.json|*.tfvars) return 0 ;;
+    *.py|*.pyi|*.cpp|*.cc|*.cxx|*.hpp|*.hh|*.hxx|*.ipp|*.tpp|*.inl|*.h) return 0 ;;
     *) return 1 ;;
   esac
 }

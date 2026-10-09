@@ -1,7 +1,7 @@
 {
   "name": "reports",
   "description": "Slash-command reports over your local omp history: token spend, skill usage, and words read and written.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "shousper"
   },

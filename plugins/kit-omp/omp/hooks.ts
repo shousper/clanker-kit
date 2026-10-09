@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { homedir } from "node:os";
-import { readdirSync, statSync, unlinkSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 /**
@@ -73,30 +72,11 @@ export function buildFormatCommand(pluginRoot: string, files: readonly string[])
   return [resolve(pluginRoot, "hooks/format-files.sh"), ...files];
 }
 
-/** A full read of a standards file: bare `CLAUDE.md` basename, optionally with
- *  the `:raw` read selector. Line-range selectors are partial reads and do
- *  not count. */
-const STANDARDS_FILE_PATH = /(^|\/)CLAUDE\.md(:raw)?$/;
-
-const STALE_STATE_MS = 2 * 24 * 60 * 60 * 1000;
-
-/** Removes `standards-*.txt` gate state older than two days. Mirrors
- *  `find -mtime +1`, which compares whole 24-hour periods. */
-function pruneStaleStandards(stateDir: string, now = Date.now()): void {
-  try {
-    for (const name of readdirSync(stateDir)) {
-      if (!/^standards-.*\.txt$/.test(name)) continue;
-      const file = resolve(stateDir, name);
-      try {
-        if (statSync(file).mtimeMs <= now - STALE_STATE_MS) unlinkSync(file);
-      } catch {
-        // A concurrent cleanup or malformed state entry must not stall a session.
-      }
-    }
-  } catch {
-    // A missing or inaccessible state directory is harmless.
-  }
-}
+/** A full read of a standards file: a `scope.md`, `core.md` or `project.md`
+ *  basename, optionally with the `:raw` read selector. Line-range selectors are
+ *  partial reads and do not count. The gate compares physical paths, so a
+ *  same-named file elsewhere only costs one no-op spawn. */
+const STANDARDS_FILE_PATH = /(^|\/)(scope|core|project)\.md(:raw)?$/;
 
 // ---------------------------------------------------------------------------
 // Handler factory — injected deps make this testable without an OMP runtime
@@ -149,6 +129,7 @@ export type ToolCallResult = { block: true; reason: string } | undefined;
 
 export interface HookHandlers {
   sessionStart(event: unknown, ctx?: MinimalHookContext): Promise<void>;
+  sessionBeforeSwitch(event: unknown, ctx?: MinimalHookContext): Promise<undefined>;
   toolCall(event: ToolCallLike, ctx?: MinimalHookContext): Promise<ToolCallResult>;
   toolResult(event: ToolResultLike, ctx?: MinimalHookContext): Promise<void>;
   sessionCompact(event: unknown, ctx?: MinimalHookContext): Promise<void>;
@@ -195,6 +176,7 @@ export function createHandlers(
   const cwdFor = (ctx?: MinimalHookContext) => ctx?.cwd ?? process.cwd();
   const sessionKeyFor = (ctx?: MinimalHookContext) => ctx?.sessionManager?.getSessionId() ?? "default";
   const gateScript = resolve(pluginRoot, "hooks/standards-gate.sh");
+  const cleanupScript = resolve(pluginRoot, "hooks/state-cleanup.sh");
   const runGate = (args: string[], ctx?: MinimalHookContext): Promise<ExecResult> =>
     deps.exec(gateScript, args, {
       cwd: cwdFor(ctx),
@@ -212,8 +194,13 @@ export function createHandlers(
 
   return {
     async sessionStart(_event, ctx) {
+      const cwd = cwdFor(ctx);
       try {
-        const cwd = cwdFor(ctx);
+        await deps.exec(cleanupScript, ["prune"], { cwd });
+      } catch {
+        // Stale state is harmless; never block session start on cleanup.
+      }
+      try {
         const scriptPath = resolve(pluginRoot, "hooks/session-context.sh");
         const result = await deps.exec(scriptPath, [], { cwd });
         const context = result.stdout.trim();
@@ -221,6 +208,18 @@ export function createHandlers(
       } catch {
         // Never block session start on a context-injection failure.
       }
+    },
+
+    /** `/new` drops the context this session's gate state described; fork and
+     *  resume keep it. Never cancels the switch. */
+    async sessionBeforeSwitch(event, ctx) {
+      if ((event as { reason?: unknown } | undefined)?.reason !== "new") return undefined;
+      try {
+        await deps.exec(cleanupScript, ["forget"], { cwd: cwdFor(ctx), env: { KIT_SCRATCH_KEY: sessionKeyFor(ctx) } });
+      } catch {
+        // A cleanup failure must never affect the switch.
+      }
+      return undefined;
     },
 
     async toolCall(event, ctx) {
@@ -308,7 +307,6 @@ export function registerHooks(pi: ExtensionAPI, pluginRoot: string): void {
     );
 
   pi.on("session_start", async (event, ctx) => {
-    pruneStaleStandards(scriptEnv.KIT_STATE_DIR);
     await handlersFor(ctx).sessionStart(event, ctx);
   });
   pi.on("tool_call", async (event, ctx) => handlersFor(ctx).toolCall(event as unknown as ToolCallLike, ctx));
@@ -318,6 +316,7 @@ export function registerHooks(pi: ExtensionAPI, pluginRoot: string): void {
   pi.on("session_compact" as never, async (event: unknown, ctx: ExtensionContext) => {
     await handlersFor(ctx).sessionCompact(event, ctx);
   });
+  pi.on("session_before_switch" as never, async (event: unknown, ctx: ExtensionContext) => handlersFor(ctx).sessionBeforeSwitch(event, ctx));
   pi.on("session_stop", async (event, ctx) => {
     await handlersFor(ctx).sessionStop(event, ctx);
   });

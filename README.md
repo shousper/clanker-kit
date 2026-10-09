@@ -98,15 +98,24 @@ Each stage flows into the next automatically. You can enter at any point if you 
 
 | Event | Hook | Trigger |
 |-------|------|---------|
-| PreToolUse | `standards-check.sh` | Edit/Write/MultiEdit — blocks an agent's first edit in Go, Rust, Python, C++, HCL, or Tailwind CSS until it has read that language's standards file; asks once per language per agent, and allows the edit if the check itself fails |
-| PostToolUse | `standards-seen.sh` | Read — marks a language's standards as loaded when the agent reads its `CLAUDE.md` in full; a ranged read doesn't count |
-| PostToolUse | `record.sh` | Write/Edit — records edited source paths (Go, Rust, JS/TS, HCL/Terraform/OpenTofu) to an agent-scoped scratch; never modifies files |
-| Stop + SubagentStop | `format-on-stop.sh` | End of turn — formats the touched files and runs checks once, surfacing results as a single non-blocking message (advisory, not mid-turn blocking) |
+| PreToolUse | `standards-check.sh` | Edit/Write/MultiEdit — blocks an agent's first edit in Go, Rust, HCL, Tailwind CSS, Python or C++ until it has read the shared scope rules, the language's core standards, and the project standards when the edit changes build or tool configuration; asks once per standards file per agent, and allows the edit if the check itself fails |
+| PostToolUse | `standards-seen.sh` | Read — marks a standards file as loaded when the agent reads it in full; a ranged read doesn't count |
+| PostToolUse | `record.sh` | Write/Edit — records edited source paths (Go, Rust, JS/TS, Python, C++, HCL/Terraform/OpenTofu) to an agent-scoped scratch; never modifies files |
+| Stop + SubagentStop | `format-on-stop.sh` | End of turn — formats the touched files and runs checks once (ruff and clang-format run only in projects that configure them), surfacing results as a single non-blocking message (advisory, not mid-turn blocking) |
 | SessionStart | `session-start.sh` | Session startup, resume, clear, compact — kit intro |
-| SessionStart | `hcl-detect.sh` | Startup/resume — one-time HCL tool-detection notice and scratch prune |
-| SessionStart | `standards-reset.sh` | Clear/compact — forgets which standards were loaded, because the text has left the context |
+| SessionStart | `hcl-detect.sh` | Startup/resume — one-time HCL tool-detection notice |
+| SessionStart | `standards-reset.sh` | Clear/compact — forgets which standards files were loaded, because the text has left the context |
+| SessionStart + SessionEnd | `state-cleanup.sh` | Maps Claude's session events onto the shared `state-cleanup.sh`: session start runs `prune`, and session end with reason `clear` runs `forget` |
 
-On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`, `tool_result`, and `session_compact` events.
+To skip formatters or checkers, set `KIT_FORMAT_SKIP` to a space- or comma-separated list of handler names, or to `all`. The handlers are `gofmt`, `rustfmt`, `hcl`, `eslint`, `tsc`, `rust_checks`, `ruff` and `clang_format`. Both harnesses read the variable from the environment of the harness process. For example:
+
+```bash
+export KIT_FORMAT_SKIP=ruff
+```
+
+Both harnesses share one state cleanup, `shared/hooks/state-cleanup.sh`. At session start it prunes kit state files (standards-gate state and formatter scratch) that are 48 hours old or older. When the conversation is cleared (Claude `/clear`, OMP `/new`) it forgets that session's state files, because the context they described is gone. A resumed or forked session keeps its state.
+
+On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`, `tool_result`, and `session_compact` events, and runs the cleanup from the `session_start` and `session_before_switch` events.
 
 ## Agents
 
@@ -125,7 +134,27 @@ Kit bundles coding standards for these languages:
 - **HCL (Terraform/OpenTofu)** — file layout, naming, variables, outputs, version pinning, tooling
 - **Tailwind CSS** — utility classes, component patterns; applies only in a project with a `tailwind.config.*` file or a `tailwindcss` dependency
 
-A hook enforces them. The first time an agent edits a file in one of these languages, kit blocks the edit and tells the agent to read that language's standards file in full. The agent then retries. Kit asks once per language per agent, and a read with a line range doesn't count. Compaction resets the check, because the standards text leaves the context. Edits made through shell commands, such as `sed -i`, aren't checked.
+A hook enforces them. The standards live in three kinds of file:
+
+- `code-standards/scope.md` holds the rules every language shares, such as precedence of project settings and scope limits.
+- `code-standards/<lang>/core.md` holds the language's core standards, for `go`, `rust`, `hcl`, `tailwindcss`, `python` and `cpp`.
+- `code-standards/<lang>/project.md` holds the project standards for build and tool configuration. It exists for `rust`, `python` and `cpp` only.
+
+The first time an agent edits a file in one of these languages, kit blocks the edit and lists the standards files the agent hasn't read yet. The agent reads each one in full and retries. Which files an edit needs depends on the file:
+
+| Example file | Files required |
+|--------------|----------------|
+| `main.go`, `go.mod` | `scope.md`, `go/core.md` |
+| `lib.rs` | `scope.md`, `rust/core.md` |
+| `Cargo.toml`, `clippy.toml`, `rust-toolchain.toml` | `scope.md`, `rust/core.md`, `rust/project.md` |
+| `main.tf`, `terraform.tfvars` | `scope.md`, `hcl/core.md` |
+| `app.py` | `scope.md`, `python/core.md` |
+| `pyproject.toml` | `scope.md`, `python/core.md`, `python/project.md` |
+| `engine.cpp`, `engine.hpp` | `scope.md`, `cpp/core.md` |
+| `CMakeLists.txt`, `.clang-tidy`, `.clang-format` | `scope.md`, `cpp/core.md`, `cpp/project.md` |
+| `index.tsx`, `styles.css` in a Tailwind project | `scope.md`, `tailwindcss/core.md` |
+
+Kit asks once per standards file per agent session, and a read with a line range doesn't count. Because `scope.md` is shared, an agent that has read it doesn't read it again when it moves to another language. Compaction and clearing the session reset the check, because the standards text leaves the context. Edits made through shell commands, such as `sed -i`, aren't checked.
 
 ## Tools
 
@@ -153,6 +182,18 @@ node tools/claude-mem-backfill.mjs --session <uuid>
 ```
 
 Resumable — tracks state in `~/.claude-mem/backfill-state.json`. Safe to interrupt with Ctrl+C and re-run.
+
+## Development
+
+The repo pins its toolchain and tasks in `mise.toml`.
+
+1. [Install mise](https://mise.jdx.dev/getting-started.html).
+2. Run `mise install` to install the pinned tools, including Bun, jq, shellcheck, Vale, ruff, Claude Code, and OMP.
+3. Run `mise run test` to install dependencies and run the test suite.
+
+Run `mise tasks` to list the other tasks. `mise run validate` checks both harnesses' plugin manifests and OMP skill discovery without calling a model. It runs `validate:claude`, which checks the Claude marketplace and plugins with `claude plugin validate`, and `validate:omp`, which links each OMP plugin into a temporary omp home, then checks `omp plugin doctor`, an rpc `get_state` skill listing, and extension loading. The `test:evals*` tasks call real Claude Code and OMP sessions, so they need working credentials for each harness.
+
+You must install Bash 4 or newer yourself, because mise doesn't provide it and `shared/hooks/format-files.sh` uses `mapfile`. On macOS, run `brew install bash` and put Homebrew's `bin` directory ahead of `/bin` on your `PATH`.
 
 ## Releases
 

@@ -109,15 +109,24 @@ const formatCall = (cwd: string, ...files: string[]) => ({ command: resolve(PLUG
 
 const ctxFor = (sessionId: string, cwd = "/work") => ({ cwd, hasUI: true, sessionManager: { getSessionId: () => sessionId } });
 
+const cleanupCall = (arg: "prune" | "forget", cwd = "/work", env?: Record<string, string>) => ({
+  command: resolve(PLUGIN_ROOT, "hooks/state-cleanup.sh"),
+  args: [arg],
+  opts: env ? { cwd, env } : { cwd },
+});
+
 describe("createHandlers: sessionStart", () => {
-  it("sends the session-context script's stdout as next-turn context", async () => {
-    const deps = fakeDeps(async () => ({ stdout: "  governance block  \n", stderr: "", code: 0 }));
+  it("prunes stale state and sends the session-context script's stdout as next-turn context", async () => {
+    const deps = fakeDeps(async (command) => ({ stdout: command.endsWith("session-context.sh") ? "  governance block  \n" : "", stderr: "", code: 0 }));
     const handlers = createHandlers(PLUGIN_ROOT, deps);
 
     await handlers.sessionStart({}, ctxFor("S1"));
 
     expect(deps.sentMessages).toEqual(["governance block"]);
-    expect(deps.execCalls).toEqual([{ command: resolve(PLUGIN_ROOT, "hooks/session-context.sh"), args: [], opts: { cwd: "/work" } }]);
+    expect(deps.execCalls).toEqual([
+      cleanupCall("prune"),
+      { command: resolve(PLUGIN_ROOT, "hooks/session-context.sh"), args: [], opts: { cwd: "/work" } },
+    ]);
   });
 
   it("sends nothing when the script prints only whitespace", async () => {
@@ -135,7 +144,7 @@ describe("createHandlers: sessionStart", () => {
 
     await handlers.sessionStart({});
 
-    expect(deps.execCalls[0]?.opts).toEqual({ cwd: process.cwd() });
+    expect(deps.execCalls.map((call) => call.opts)).toEqual([{ cwd: process.cwd() }, { cwd: process.cwd() }]);
   });
 
   it("swallows a throwing exec instead of propagating", async () => {
@@ -146,6 +155,48 @@ describe("createHandlers: sessionStart", () => {
 
     await expect(handlers.sessionStart({}, ctxFor("S1"))).resolves.toBeUndefined();
     expect(deps.sentMessages).toEqual([]);
+  });
+
+  it("still sends context when the prune script fails", async () => {
+    const deps = fakeDeps(async (command) => {
+      if (command.endsWith("state-cleanup.sh")) throw new Error("spawn failed");
+      return { stdout: "governance block", stderr: "", code: 0 };
+    });
+    const handlers = createHandlers(PLUGIN_ROOT, deps);
+
+    await handlers.sessionStart({}, ctxFor("S1"));
+
+    expect(deps.sentMessages).toEqual(["governance block"]);
+  });
+});
+
+describe("createHandlers: sessionBeforeSwitch", () => {
+  it("forgets the current session's state on /new, keyed by the old session id", async () => {
+    const deps = fakeDeps();
+    const handlers = createHandlers(PLUGIN_ROOT, deps);
+
+    const result = await handlers.sessionBeforeSwitch({ reason: "new" }, ctxFor("OLD"));
+
+    expect(result).toBeUndefined();
+    expect(deps.execCalls).toEqual([cleanupCall("forget", "/work", { KIT_SCRATCH_KEY: "OLD" })]);
+  });
+
+  it.each(["fork", "resume", "other", undefined])("execs nothing for reason %p", async (reason) => {
+    const deps = fakeDeps();
+    const handlers = createHandlers(PLUGIN_ROOT, deps);
+
+    expect(await handlers.sessionBeforeSwitch({ reason }, ctxFor("OLD"))).toBeUndefined();
+    expect(await handlers.sessionBeforeSwitch(undefined, ctxFor("OLD"))).toBeUndefined();
+    expect(deps.execCalls).toEqual([]);
+  });
+
+  it("never throws or cancels when the script fails", async () => {
+    const deps = fakeDeps(async () => {
+      throw new Error("spawn failed");
+    });
+    const handlers = createHandlers(PLUGIN_ROOT, deps);
+
+    expect(await handlers.sessionBeforeSwitch({ reason: "new" }, ctxFor("OLD"))).toBeUndefined();
   });
 });
 
@@ -370,9 +421,11 @@ describe("createHandlers: toolCall (standards gate)", () => {
 
 describe("createHandlers: standards reads and compaction", () => {
   it.each([
-    ["/standards/rust/CLAUDE.md", "/standards/rust/CLAUDE.md"],
-    ["CLAUDE.md", "/work/CLAUDE.md"],
-    ["CLAUDE.md:raw", "/work/CLAUDE.md:raw"],
+    ["/standards/rust/core.md", "/standards/rust/core.md"],
+    ["/standards/rust/project.md", "/standards/rust/project.md"],
+    ["/standards/scope.md", "/standards/scope.md"],
+    ["core.md", "/work/core.md"],
+    ["core.md:raw", "/work/core.md:raw"],
   ])("marks a full standards read for %s", async (path, expected) => {
     const deps = fakeDeps();
     await createHandlers(PLUGIN_ROOT, deps).toolResult(
@@ -381,7 +434,7 @@ describe("createHandlers: standards reads and compaction", () => {
     expect(deps.execCalls).toEqual([gateCall("/work", "S1", "seen", expected)]);
   });
 
-  it.each(["CLAUDE.md:1-40", "notes/CLAUDE.md.bak", "README.md"])
+  it.each(["core.md:1-40", "notes/core.md.bak", "README.md", "CLAUDE.md"])
   ("does not mark partial or unrelated reads: %s", async (path) => {
     const deps = fakeDeps();
     await createHandlers(PLUGIN_ROOT, deps).toolResult(
@@ -393,11 +446,11 @@ describe("createHandlers: standards reads and compaction", () => {
   it("does not mark errored or non-read results, and swallows seen failure", async () => {
     const deps = fakeDeps(async () => { throw new Error("seen failed"); });
     const handlers = createHandlers(PLUGIN_ROOT, deps);
-    await expect(handlers.toolResult({ toolName: "read", input: { path: "CLAUDE.md" }, isError: false }, ctxFor("S1")))
+    await expect(handlers.toolResult({ toolName: "read", input: { path: "core.md" }, isError: false }, ctxFor("S1")))
       .resolves.toBeUndefined();
     const callsAfterFailure = deps.execCalls.length;
-    await handlers.toolResult({ toolName: "read", input: { path: "CLAUDE.md" }, isError: true }, ctxFor("S1"));
-    await handlers.toolResult({ toolName: "grep", input: { path: "CLAUDE.md" }, isError: false }, ctxFor("S1"));
+    await handlers.toolResult({ toolName: "read", input: { path: "core.md" }, isError: true }, ctxFor("S1"));
+    await handlers.toolResult({ toolName: "grep", input: { path: "core.md" }, isError: false }, ctxFor("S1"));
     expect(deps.execCalls).toHaveLength(callsAfterFailure);
   });
 
@@ -417,7 +470,7 @@ describe("createHandlers: standards reads and compaction", () => {
 const temporaryRoots: string[] = [];
 afterEach(() => temporaryRoots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
-function gateProject(): { pluginRoot: string; cwd: string; state: string; standards: string } {
+function gateProject(): { pluginRoot: string; cwd: string; state: string; standards: string[] } {
   const pluginRoot = realpathSync(mkdtempSync(join(tmpdir(), "kit-omp-gate-")));
   temporaryRoots.push(pluginRoot);
   const cwd = join(pluginRoot, "project");
@@ -427,7 +480,15 @@ function gateProject(): { pluginRoot: string; cwd: string; state: string; standa
   symlinkSync(HOOKS_DIR, join(pluginRoot, "hooks"));
   symlinkSync(CODE_STANDARDS_DIR, join(pluginRoot, "code-standards"));
   writeFileSync(join(cwd, "main.rs"), "fn main() {}\n");
-  return { pluginRoot, cwd, state, standards: join(pluginRoot, "code-standards", "rust", "CLAUDE.md") };
+  return {
+    pluginRoot,
+    cwd,
+    state,
+    standards: [
+      join(pluginRoot, "code-standards", "scope.md"),
+      join(pluginRoot, "code-standards", "rust", "core.md"),
+    ],
+  };
 }
 
 function registerWithState(project: { pluginRoot: string; state: string }) {
@@ -457,15 +518,17 @@ describe("registerHooks: standards gate integration", () => {
 
       expect(await toolCall!({ toolName: "edit", input: { path: "main.rs" } }, ctx)).toEqual({
         block: true,
-        reason: expect.stringContaining("code-standards/rust/CLAUDE.md"),
+        reason: expect.stringContaining("code-standards/rust/core.md"),
       });
       expect(await toolCall!({ toolName: "edit", input: { path: "main.rs" } }, ctx)).toBeUndefined();
-      await toolResult!({ toolName: "read", input: { path: project.standards }, isError: false }, ctx);
+      for (const path of project.standards) {
+        await toolResult!({ toolName: "read", input: { path }, isError: false }, ctx);
+      }
       expect(await toolCall!({ toolName: "edit", input: { path: "main.rs" } }, ctx)).toBeUndefined();
       await compact!({}, ctx);
       expect(await toolCall!({ toolName: "edit", input: { path: "main.rs" } }, ctx)).toEqual({
         block: true,
-        reason: expect.stringContaining("code-standards/rust/CLAUDE.md"),
+        reason: expect.stringContaining("code-standards/rust/core.md"),
       });
     } finally {
       if (original === undefined) delete process.env.KIT_STATE_DIR;
@@ -473,17 +536,14 @@ describe("registerHooks: standards gate integration", () => {
     }
   });
 
-  it("removes only standards state older than one day when the session starts", async () => {
+  it("prunes state two days old or older when the session starts, through the shared script", async () => {
     const project = gateProject();
-    const old = join(project.state, "standards-old.txt");
-    const fresh = join(project.state, "standards-fresh.txt");
-    const unrelated = join(project.state, "touched-old.txt");
-    writeFileSync(old, "rust loaded\n");
-    writeFileSync(fresh, "rust prompted\n");
-    writeFileSync(unrelated, "src/main.rs\n");
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-    utimesSync(old, twoDaysAgo, twoDaysAgo);
-    utimesSync(unrelated, twoDaysAgo, twoDaysAgo);
+    const longAgo = new Date(946684800000);
+    const stale = ["standards-old.txt", "touched-old.txt"].map((name) => join(project.state, name));
+    const fresh = ["standards-fresh.txt", "touched-fresh.txt"].map((name) => join(project.state, name));
+    const unrelated = join(project.state, "notes-old.txt");
+    for (const file of [...stale, ...fresh, unrelated]) writeFileSync(file, "x\n");
+    for (const file of [...stale, unrelated]) utimesSync(file, longAgo, longAgo);
 
     const previous = process.env.KIT_STATE_DIR;
     process.env.KIT_STATE_DIR = project.state;
@@ -491,9 +551,35 @@ describe("registerHooks: standards gate integration", () => {
       const registered = registerWithState(project);
       const ctx = { cwd: project.cwd, hasUI: false, sessionManager: { getSessionId: () => "S1" } };
       await registered.get("session_start")!({}, ctx);
-      expect(existsSync(old)).toBeFalse();
-      expect(existsSync(fresh)).toBeTrue();
-      expect(existsSync(unrelated)).toBeTrue();
+      for (const file of stale) expect(existsSync(file)).toBeFalse();
+      for (const file of [...fresh, unrelated]) expect(existsSync(file)).toBeTrue();
+    } finally {
+      if (previous === undefined) delete process.env.KIT_STATE_DIR;
+      else process.env.KIT_STATE_DIR = previous;
+    }
+  });
+
+  it("forgets only the old session's state on /new and leaves other switches alone", async () => {
+    const project = gateProject();
+    const names = ["standards-OLD.txt", "touched-OLD.txt", "standards-OTHER.txt", "touched-OTHER.txt"];
+    for (const name of names) writeFileSync(join(project.state, name), "x\n");
+
+    const previous = process.env.KIT_STATE_DIR;
+    process.env.KIT_STATE_DIR = project.state;
+    try {
+      const registered = registerWithState(project);
+      const ctx = { cwd: project.cwd, hasUI: false, sessionManager: { getSessionId: () => "OLD" } };
+      const beforeSwitch = registered.get("session_before_switch");
+      expect(beforeSwitch).toBeDefined();
+
+      for (const reason of ["fork", "resume"]) expect(await beforeSwitch!({ reason }, ctx)).toBeUndefined();
+      for (const name of names) expect(existsSync(join(project.state, name))).toBeTrue();
+
+      expect(await beforeSwitch!({ reason: "new" }, ctx)).toBeUndefined();
+      expect(existsSync(join(project.state, "standards-OLD.txt"))).toBeFalse();
+      expect(existsSync(join(project.state, "touched-OLD.txt"))).toBeFalse();
+      expect(existsSync(join(project.state, "standards-OTHER.txt"))).toBeTrue();
+      expect(existsSync(join(project.state, "touched-OTHER.txt"))).toBeTrue();
     } finally {
       if (previous === undefined) delete process.env.KIT_STATE_DIR;
       else process.env.KIT_STATE_DIR = previous;
