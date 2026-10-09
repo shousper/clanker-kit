@@ -2,7 +2,7 @@ import { contentText, toolSucceeded, type Harness, type NormalizedEvent, type Ru
 import { KIT_CLAUDE_ROOT } from "../paths";
 
 /** Claude Code's own alias resolution is reliable; only OMP's fuzzy match is not. */
-const MODEL = "sonnet";
+const MODEL = process.env.CLAUDE_EVAL_MODEL || "sonnet";
 
 interface ClaudeContentBlock {
   type: string;

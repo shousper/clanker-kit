@@ -98,7 +98,7 @@ Each stage flows into the next automatically. You can enter at any point if you 
 
 | Event | Hook | Trigger |
 |-------|------|---------|
-| PreToolUse | `standards-check.sh` | Edit/Write/MultiEdit — blocks an agent's first edit in Go, Rust, HCL, or Tailwind CSS until it has read that language's standards file; asks once per language per agent, and allows the edit if the check itself fails |
+| PreToolUse | `standards-check.sh` | Edit/Write/MultiEdit — blocks an agent's first edit in Go, Rust, Python, C++, HCL, or Tailwind CSS until it has read that language's standards file; asks once per language per agent, and allows the edit if the check itself fails |
 | PostToolUse | `standards-seen.sh` | Read — marks a language's standards as loaded when the agent reads its `CLAUDE.md` in full; a ranged read doesn't count |
 | PostToolUse | `record.sh` | Write/Edit — records edited source paths (Go, Rust, JS/TS, HCL/Terraform/OpenTofu) to an agent-scoped scratch; never modifies files |
 | Stop + SubagentStop | `format-on-stop.sh` | End of turn — formats the touched files and runs checks once, surfacing results as a single non-blocking message (advisory, not mid-turn blocking) |
@@ -120,12 +120,12 @@ Kit bundles coding standards for these languages:
 
 - **Go** — formatting, error handling, project structure
 - **Rust** — clippy lints, formatting, idiomatic patterns
+- **Python** — type hints, error handling, testing, and uv, ruff and mypy defaults; uses the project's own type checker when it has one
+- **C++** — C++20 baseline, resource and memory safety, concurrency, security; `.h` and CMake files count as C++ only in a repository that holds C++ sources
 - **HCL (Terraform/OpenTofu)** — file layout, naming, variables, outputs, version pinning, tooling
 - **Tailwind CSS** — utility classes, component patterns; applies only in a project with a `tailwind.config.*` file or a `tailwindcss` dependency
 
 A hook enforces them. The first time an agent edits a file in one of these languages, kit blocks the edit and tells the agent to read that language's standards file in full. The agent then retries. Kit asks once per language per agent, and a read with a line range doesn't count. Compaction resets the check, because the standards text leaves the context. Edits made through shell commands, such as `sed -i`, aren't checked.
-
-Python has no standards file yet, so Python edits aren't gated.
 
 ## Tools
 

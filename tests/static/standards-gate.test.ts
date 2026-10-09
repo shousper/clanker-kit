@@ -9,17 +9,19 @@ import { HOOKS_DIR, KIT_CLAUDE_HOOKS_DIR } from "../utils/paths";
 const LIB = resolve(HOOKS_DIR, "lib.sh");
 
 let base: string;     // scratch tree holding everything below
-let root: string;     // fake plugin root: code-standards/{go,rust,hcl,tailwindcss}/CLAUDE.md
+let root: string;     // fake plugin root: code-standards/{go,rust,hcl,tailwindcss,python,cpp}/CLAUDE.md
 let alias: string;    // symlink to root
 let work: string;     // project dir with an .opentofu-version pin and no Tailwind signal
 let stateDir: string; // KIT_STATE_DIR; its parent also receives hcl-tool.json
 
-const LANGS = ["go", "rust", "hcl", "tailwindcss"] as const;
+const LANGS = ["go", "rust", "hcl", "tailwindcss", "python", "cpp"] as const;
 const LABELS: Record<string, string> = {
   go: "Go",
   rust: "Rust",
   hcl: "HCL (Terraform/OpenTofu)",
   tailwindcss: "Tailwind CSS",
+  python: "Python",
+  cpp: "C++",
 };
 
 beforeAll(async () => {
@@ -58,7 +60,7 @@ function gate(sub: "check" | "seen" | "reset", file: string | undefined, key: st
   return runNeutralScript("standards-gate.sh", {
     args: file === undefined ? [sub] : [sub, file],
     cwd: work,
-    env: { KIT_PLUGIN_ROOT: root, KIT_STATE_DIR: stateDir, KIT_SCRATCH_KEY: key, ...env },
+    env: { KIT_PLUGIN_ROOT: root, KIT_STATE_DIR: stateDir, KIT_SCRATCH_KEY: key, GIT_CEILING_DIRECTORIES: base, ...env },
   });
 }
 
@@ -162,7 +164,7 @@ describe("standards-gate.sh check", () => {
 
   it("passes files outside the language table", async () => {
     const key = freshKey();
-    for (const name of ["README.md", "script.py", "notes.txt", "data.json", "main.ts", "Makefile", "gofile", "go.work"]) {
+    for (const name of ["README.md", "main.c", "requirements.txt", "notes.txt", "data.json", "main.ts", "Makefile", "gofile", "go.work", "util.h", "CMakeLists.txt"]) {
       await expectAllowed(join(work, name), key);
     }
     await expectBlocked(join(work, "main.go"), "go", key); // the unknown files recorded nothing
@@ -282,8 +284,6 @@ describe("standards-gate.sh seen", () => {
 
   it("does not count another CLAUDE.md, or the standards of a different language", async () => {
     await writeFile(join(work, "CLAUDE.md"), "# project notes\n");
-    await mkdir(join(root, "code-standards", "python"), { recursive: true });
-    await writeFile(join(root, "code-standards", "python", "CLAUDE.md"), "# python\n");
 
     const key = freshKey();
     await gate("seen", join(work, "CLAUDE.md"), key);
@@ -327,6 +327,129 @@ describe("standards-gate.sh seen", () => {
     await gate("seen", std("go"), reader);
     await expectAllowed(goFile(), reader);
     await expectBlocked(goFile(), "go", other);
+  });
+});
+
+describe("standards-gate.sh check: Python", () => {
+  /** Python sources, stubs and the project file each block the first edit and name the Python standards. */
+  it("gates .py, .pyi and pyproject.toml once per agent", async () => {
+    for (const name of ["app.py", "types.pyi", "pyproject.toml"]) {
+      const key = freshKey();
+      const file = join(work, name);
+      const blocked = await gate("check", file, key);
+      expect(blocked.exitCode, `${name} must block the first Python edit`).toBe(2);
+      expect(blocked.stdout, `${name} must name the Python standards`).toBe(reasonFor(file, "python"));
+      const retried = await gate("check", file, key);
+      expect(retried.exitCode, `${name} must pass on the retry`).toBe(0);
+    }
+  });
+
+  /** A full read of the Python standards satisfies the gate, and an agent with no read is still blocked. */
+  it("allows the first Python edit only after a full read of the Python standards", async () => {
+    const reader = freshKey();
+    await gate("seen", std("python"), reader);
+    const afterRead = await gate("check", join(work, "app.py"), reader);
+    expect(afterRead.exitCode, "a read of the Python standards must satisfy the gate").toBe(0);
+    const withoutRead = await gate("check", join(work, "app.py"), freshKey());
+    expect(withoutRead.exitCode, "an agent that has not read the Python standards must be blocked").toBe(2);
+  });
+});
+
+describe("standards-gate.sh check: C++", () => {
+  const cppOnlyNames = [
+    "engine.cpp", "engine.cc", "engine.cxx", "engine.hpp", "engine.hh",
+    "engine.hxx", "engine.ipp", "engine.tpp", "engine.inl",
+  ];
+
+  /** Each C++-only extension blocks the first edit and names the C++ standards, in any directory. */
+  it("gates C++-only sources and headers once per agent", async () => {
+    for (const name of cppOnlyNames) {
+      const key = freshKey();
+      const file = join(work, name);
+      const blocked = await gate("check", file, key);
+      expect(blocked.exitCode, `${name} must block the first C++ edit`).toBe(2);
+      expect(blocked.stdout, `${name} must name the C++ standards`).toBe(reasonFor(file, "cpp"));
+      const retried = await gate("check", file, key);
+      expect(retried.exitCode, `${name} must pass on the retry`).toBe(0);
+    }
+  });
+
+  /** A full read of the C++ standards satisfies the gate, and an agent with no read is still blocked. */
+  it("allows the first C++ edit only after a full read of the C++ standards", async () => {
+    const reader = freshKey();
+    await gate("seen", std("cpp"), reader);
+    const afterRead = await gate("check", join(work, "engine.cpp"), reader);
+    expect(afterRead.exitCode, "a read of the C++ standards must satisfy the gate").toBe(0);
+    const withoutRead = await gate("check", join(work, "engine.cpp"), freshKey());
+    expect(withoutRead.exitCode, "an agent that has not read the C++ standards must be blocked").toBe(2);
+  });
+
+  const sharedNames = ["include/project_name/engine.h", "CMakeLists.txt", "cmake/warnings.cmake", "CMakePresets.json"];
+
+  /** In a repository that holds a C++ source, every shared C and C++ file blocks as C++. A .git file marks a worktree. */
+  it("gates .h and CMake files as C++ in a repository with C++ sources", async () => {
+    const repo = join(base, "cpp-repo");
+    await mkdir(join(repo, "src", "engine"), { recursive: true });
+    await writeFile(join(repo, ".git"), "gitdir: /elsewhere/.git/worktrees/cpp-repo\n");
+    await writeFile(join(repo, "src", "engine", "engine.cpp"), "int main() { return 0; }\n");
+    for (const relative of sharedNames) {
+      const file = join(repo, relative);
+      const blocked = await gate("check", file, freshKey());
+      expect(blocked.exitCode, `${relative} must block in a C++ repository`).toBe(2);
+      expect(blocked.stdout, `${relative} must name the C++ standards`).toBe(reasonFor(file, "cpp"));
+    }
+  });
+
+  /** In a repository with only C sources, every shared file passes, so C code never gets C++ rules. */
+  it("passes .h and CMake files in a repository with only C sources", async () => {
+    const repo = join(base, "c-repo");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    await mkdir(join(repo, "src"), { recursive: true });
+    await writeFile(join(repo, "src", "main.c"), "int main(void) { return 0; }\n");
+    const key = freshKey();
+    for (const relative of sharedNames) {
+      const result = await gate("check", join(repo, relative), key);
+      expect(result.exitCode, `${relative} must pass in a C repository`).toBe(0);
+      expect(result.stdout, `${relative} must print no block reason in a C repository`).toBe("");
+    }
+  });
+
+  /** C++ sources under vendored, generated or dependency directories do not make a C repository count as C++. */
+  it("ignores C++ sources under vendored and build directories", async () => {
+    const repo = join(base, "c-repo-vendored");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    for (const skipped of ["third_party/json", "vendor/fmt", "build/generated", "cmake-build-debug/gen", "node_modules/addon"]) {
+      await mkdir(join(repo, skipped), { recursive: true });
+      await writeFile(join(repo, skipped, "skipped.cpp"), "\n");
+    }
+    const result = await gate("check", join(repo, "util.h"), freshKey());
+    expect(result.exitCode, "vendored and build C++ sources must not gate a C header").toBe(0);
+  });
+
+  /** Outside a repository, the search covers only the directory of the edited file. */
+  it("searches only the directory of the file when there is no repository", async () => {
+    const loose = join(base, "loose-headers");
+    await mkdir(join(loose, "with-cpp"), { recursive: true });
+    await mkdir(join(loose, "without-cpp"), { recursive: true });
+    await writeFile(join(loose, "with-cpp", "engine.cpp"), "\n");
+    const withCpp = await gate("check", join(loose, "with-cpp", "engine.h"), freshKey());
+    expect(withCpp.exitCode, "a header next to a C++ source must block").toBe(2);
+    const withoutCpp = await gate("check", join(loose, "without-cpp", "util.h"), freshKey());
+    expect(withoutCpp.exitCode, "a header with no C++ source in its directory must pass").toBe(0);
+  });
+
+  /** The repository search never climbs into a GIT_CEILING_DIRECTORIES entry, as git does. */
+  it("stops the repository search at GIT_CEILING_DIRECTORIES", async () => {
+    const outer = join(base, "ceiling-outer");
+    const inner = join(outer, "inner");
+    await mkdir(join(outer, ".git"), { recursive: true });
+    await mkdir(join(inner, "headers"), { recursive: true });
+    await writeFile(join(outer, "engine.cpp"), "\n");
+    const header = join(inner, "headers", "util.h");
+    const stopped = await gate("check", header, freshKey(), { GIT_CEILING_DIRECTORIES: inner });
+    expect(stopped.exitCode, "the search must not reach the C++ source above the ceiling").toBe(0);
+    const climbed = await gate("check", header, freshKey());
+    expect(climbed.exitCode, "below the default ceiling, the search must find the repository and its C++ source").toBe(2);
   });
 });
 
