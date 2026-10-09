@@ -25,6 +25,8 @@ gate_label() {  # gate_label <lang>
     rust) printf 'Rust' ;;
     hcl) printf 'HCL (Terraform/OpenTofu)' ;;
     tailwindcss) printf 'Tailwind CSS' ;;
+    python) printf 'Python' ;;
+    cpp) printf 'C++' ;;
   esac
 }
 
@@ -48,12 +50,39 @@ gate_has_tailwind() {  # gate_has_tailwind <abs-file>
   done
 }
 
+# C and C++ share some files. They count as C++ only when the repository holds a
+# C++ source: the nearest ancestor with .git, or else the directory of the file.
+# Like git, the search never climbs into a GIT_CEILING_DIRECTORIES entry.
+gate_has_cpp() {  # gate_has_cpp <abs-file>
+  local dir="${1%/*}" parent root
+  [ -n "$dir" ] || dir="/"
+  root="$dir"
+  while :; do
+    if [ -e "$dir/.git" ]; then root="$dir"; break; fi
+    [ "$dir" = "/" ] && break
+    parent="${dir%/*}"; [ -n "$parent" ] || parent="/"
+    case ":${GIT_CEILING_DIRECTORIES:-}:" in *":$parent:"*) break ;; esac
+    dir="$parent"
+  done
+  [ -n "$(find "$root" -maxdepth 5 \
+      \( -name .git -o -name node_modules -o -name vendor -o -name third_party \
+         -o -name build -o -name 'cmake-build-*' \) -prune \
+      -o -type f \( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \
+         -o -name '*.hpp' -o -name '*.hh' -o -name '*.hxx' \) -print -quit 2>/dev/null)" ]
+}
+
 # Language of an absolute file path; prints the lang id, or returns 1.
 gate_lang_for() {  # gate_lang_for <abs-file>
   case "${1##*/}" in
     *.go|go.mod|go.sum) printf 'go' ;;
     *.rs|Cargo.toml) printf 'rust' ;;
     *.tf|*.tofu|*.tofu.json|*.tfvars) printf 'hcl' ;;
+    *.py|*.pyi|pyproject.toml) printf 'python' ;;
+    *.cpp|*.cc|*.cxx|*.hpp|*.hh|*.hxx|*.ipp|*.tpp|*.inl) printf 'cpp' ;;
+    *.h|CMakeLists.txt|*.cmake|CMakePresets.json)
+      # With any C++ state, check allows the edit whatever the search finds.
+      [ -n "$(gate_last_state cpp)" ] || gate_has_cpp "$1" || return 1
+      printf 'cpp' ;;
     *.css|*.tsx|*.jsx|*.vue|*.svelte|*.astro|*.html)
       gate_has_tailwind "$1" || return 1
       printf 'tailwindcss' ;;
@@ -99,7 +128,7 @@ cmd_seen() {  # cmd_seen <file>; marks the language loaded when <file> is its st
   file="${file%:raw}"
   [ "${file##*/}" = "CLAUDE.md" ] || return 0
   phys="$(kit_physical_path "$file")" || return 0
-  for lang in go rust hcl tailwindcss; do
+  for lang in go rust hcl tailwindcss python cpp; do
     sp="$(gate_standards_path "$lang")"
     sp_phys="$(kit_physical_path "$sp")" || continue
     [ "$phys" = "$sp_phys" ] || continue

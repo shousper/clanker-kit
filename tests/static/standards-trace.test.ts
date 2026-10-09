@@ -9,6 +9,7 @@ import {
   analyseStandards,
   delegationViolations,
   readGateStates,
+  STANDARDS_LANGS,
   standardsViolations,
   topLevelSessionId,
 } from "../utils/standards-trace";
@@ -158,5 +159,28 @@ describe("delegation judged from the gate's state", () => {
   it("fails a subagent blocked twice", () => {
     const v = delegationViolations({ sub: { go: ["prompted", "prompted", "loaded"] } }, "top", "go");
     expect(v).toEqual([expect.stringContaining("blocked 2 times")]);
+  });
+});
+
+describe("STANDARDS_LANGS", () => {
+  /** The trace counts an edit as Python or C++ exactly when the gate can map its file to that language. */
+  it("matches the files the gate maps to Python and C++", () => {
+    const python = ["src/app.py", "stubs/app.pyi", "pyproject.toml"];
+    const cpp = [
+      "src/engine.cpp", "src/engine.cc", "src/engine.cxx", "include/engine.hpp", "include/engine.hh",
+      "include/engine.hxx", "include/engine.ipp", "include/engine.tpp", "include/engine.inl",
+      "include/engine.h", "CMakeLists.txt", "cmake/warnings.cmake", "CMakePresets.json",
+    ];
+    const neither = ["requirements.txt", "src/main.c", "notes.md", "setup.cfg"];
+    for (const file of python) {
+      expect(STANDARDS_LANGS.python.file.test(file), `${file} must count as a Python edit`).toBe(true);
+    }
+    for (const file of cpp) {
+      expect(STANDARDS_LANGS.cpp.file.test(file), `${file} must count as a C++ edit`).toBe(true);
+    }
+    for (const file of neither) {
+      expect(STANDARDS_LANGS.python.file.test(file), `${file} must not count as a Python edit`).toBe(false);
+      expect(STANDARDS_LANGS.cpp.file.test(file), `${file} must not count as a C++ edit`).toBe(false);
+    }
   });
 });
