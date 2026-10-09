@@ -54,6 +54,7 @@ describe("format-on-stop.sh: gofmt + rustfmt", () => {
     const c = await cfg();
     const bin = await mkdtemp(join(tmpdir(), "bin-"));
     await makeFakeBin(bin, "gofmt");
+    await makeFakeBin(bin, "rustfmt"); // b.rs is touched too; never fall through to a real (cold) rustfmt
     const ws = await mkdtemp(join(tmpdir(), "go-"));
     await writeFile(join(ws, "a.go"), "package main\n");
     await writeFile(join(ws, "b.rs"), "fn main(){}\n");
@@ -74,6 +75,7 @@ describe("format-on-stop.sh: gofmt + rustfmt", () => {
     const c = await cfg();
     const bin = await mkdtemp(join(tmpdir(), "bin-"));
     await makeFakeBin(bin, "rustfmt");
+    await makeFakeBin(bin, "gofmt"); // a.go is touched too; never fall through to a real gofmt
     const ws = await mkdtemp(join(tmpdir(), "rs-"));
     await writeFile(join(ws, "a.go"), "package main\n");
     await writeFile(join(ws, "b.rs"), "fn main(){}\n");

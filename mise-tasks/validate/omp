@@ -121,9 +121,13 @@ check_plugin() {
 
   # rpc get_state from an empty directory. Closing stdin after the request
   # ends the session; the poll loop bounds the run time portably (macOS has
-  # no `timeout`).
+  # no `timeout`). omp refuses to start rpc mode without a usable model, and a
+  # CI runner has no credentials (macOS falls back to the keychain, which hides
+  # this locally). A placeholder key satisfies model selection; get_state
+  # never calls the model, and the probe works with networking disabled.
   printf '%s\n' '{"id":"validate-omp","type":"get_state"}' |
-    HOME="$home" omp --profile ci --cwd "$sandbox/cwd" --mode rpc --no-ui --no-session \
+    HOME="$home" ANTHROPIC_API_KEY=validate-omp-offline \
+      omp --profile ci --cwd "$sandbox/cwd" --mode rpc --no-ui --no-session \
       >"$sandbox/rpc.out" 2>"$sandbox/rpc.err" &
   rpc_pid=$!
   polls=$((rpc_timeout_seconds * 10))
