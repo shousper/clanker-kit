@@ -101,12 +101,12 @@ Each stage flows into the next automatically. You can enter at any point if you 
 | PreToolUse | `standards-check.sh` | Edit/Write/MultiEdit — blocks an agent's first edit in Go, Rust, HCL, or Tailwind CSS until it has read that language's standards file; asks once per language per agent, and allows the edit if the check itself fails |
 | PostToolUse | `standards-seen.sh` | Read — marks a language's standards as loaded when the agent reads its `CLAUDE.md` in full; a ranged read doesn't count |
 | PostToolUse | `record.sh` | Write/Edit — records edited source paths (Go, Rust, JS/TS, HCL/Terraform/OpenTofu) to an agent-scoped scratch; never modifies files |
-| Stop + SubagentStop | `format-on-stop.sh` | End of turn — formats the touched files and runs checks once, surfacing results as a single non-blocking message (advisory, not mid-turn blocking) |
+| Stop + SubagentStop | `format-on-stop.sh` | End of turn. Formats the touched files and runs file checks, surfacing results as a single non-blocking message. It does not run `cargo check`, `cargo clippy`, or `tsc` |
 | SessionStart | `session-start.sh` | Session startup, resume, clear, compact — kit intro |
 | SessionStart | `hcl-detect.sh` | Startup/resume — one-time HCL tool-detection notice and scratch prune |
 | SessionStart | `standards-reset.sh` | Clear/compact — forgets which standards were loaded, because the text has left the context |
 
-On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`, `tool_result`, and `session_compact` events.
+On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`, `tool_result`, `session_stop`, and `session_compact` events. The formatter is the shared script, so it does not run those compiles either.
 
 ## Agents
 

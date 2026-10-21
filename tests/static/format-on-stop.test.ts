@@ -239,150 +239,50 @@ describe("format-on-stop.sh: eslint", () => {
   });
 });
 
-describe("format-on-stop.sh: tsc", () => {
-  it("runs `npx tsc --noEmit` once per tsconfig project; clean → no finding", async () => {
-    const ws = await getHookWorkspace(); // package.json (typescript dep) + tsconfig.json
-    const c = await cfg();
-    const bin = await mkdtemp(join(tmpdir(), "fakebin-"));
-    await makeFakeBin(bin, "npx"); // logs argv, exits 0
-    const env = { CLAUDE_CONFIG_DIR: c, PATH: `${bin}:${process.env.PATH}` };
-    await mkdir(join(ws.dir, "src"), { recursive: true });
-    const a = join(ws.dir, "src", "ta.ts");
-    const b = join(ws.dir, "src", "tb.ts");
-    await writeFile(a, "export const a = 1;\n");
-    await writeFile(b, "export const b = 2;\n");
-
-    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: a }, cwd: ws.dir, session_id: "ts1", env });
-    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: b }, cwd: ws.dir, session_id: "ts1", env });
-    const r = await runHook("format-on-stop.sh", { tool_name: "", tool_input: {}, cwd: ws.dir, session_id: "ts1", env });
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout.trim()).toBe(""); // clean → no finding
-    const log = await readFile(join(bin, "npx.log"), "utf-8");
-    // tsc invoked once for the single project (two files, one tsconfig).
-    const tscRuns = log.split("\n").filter((l) => l.includes("tsc")).length;
-    expect(tscRuns).toBe(1);
-    expect(log).toContain("--noEmit");
-    expect(log).toContain("--pretty false");
-    await rm(c, { recursive: true, force: true });
-    await rm(bin, { recursive: true, force: true });
-    await rm(a, { force: true }); await rm(b, { force: true });
-  });
-
-  it("surfaces tsc errors as a non-blocking finding (never decision:block)", async () => {
+describe("format-on-stop.sh: no project compiles", () => {
+  it("does not run tsc when a TypeScript file was edited", async () => {
     const ws = await getHookWorkspace();
     const c = await cfg();
     const bin = await mkdtemp(join(tmpdir(), "fakebin-"));
-    await makeFakeBin(bin, "npx",
-      `#!/usr/bin/env bash\necho "$@" >> "${join(bin, "npx.log")}"\necho "src/broken.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'."\nexit 2\n`);
+    await makeFakeBin(bin, "npx");
     const env = { CLAUDE_CONFIG_DIR: c, PATH: `${bin}:${process.env.PATH}` };
     await mkdir(join(ws.dir, "src"), { recursive: true });
-    const f = join(ws.dir, "src", "broken.ts");
-    await writeFile(f, 'const x: number = "no";\n');
+    const file = join(ws.dir, "src", "ta.ts");
+    await writeFile(file, "export const a = 1;\n");
 
-    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: f }, cwd: ws.dir, session_id: "ts2", env });
-    const r = await runHook("format-on-stop.sh", { tool_name: "", tool_input: {}, cwd: ws.dir, session_id: "ts2", env });
-    expect(r.exitCode).toBe(0);
-    const j = extractJsonOrNull(r.stdout);
-    expect(j).not.toBeNull();
-    expect(j.decision ?? "").not.toBe("block");
-    expect(j.systemMessage).toContain("TS2322");
+    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: file }, cwd: ws.dir, session_id: "ts1", env });
+    const result = await runHook("format-on-stop.sh", { tool_name: "", tool_input: {}, cwd: ws.dir, session_id: "ts1", env });
+
+    expect(result.exitCode).toBe(0);
+    const log = await readFile(join(bin, "npx.log"), "utf-8").catch(() => "");
+    expect(log).not.toContain("tsc");
+    expect(log).not.toContain("--noEmit");
     await rm(c, { recursive: true, force: true });
     await rm(bin, { recursive: true, force: true });
-    await rm(f, { force: true });
-  });
-});
-
-describe("format-on-stop.sh: rust-checks", () => {
-  it("runs cargo check + clippy once per crate (two files in one crate → one pair)", async () => {
-    const c = await cfg();
-    const bin = await mkdtemp(join(tmpdir(), "fakebin-"));
-    await makeFakeBin(bin, "cargo"); // logs argv, exits 0
-    const crate = await mkdtemp(join(tmpdir(), "crate-"));
-    await writeFile(join(crate, "Cargo.toml"), "[package]\nname='x'\n");
-    await mkdir(join(crate, "src"), { recursive: true });
-    const a = join(crate, "src", "a.rs");
-    const b = join(crate, "src", "b.rs");
-    await writeFile(a, "fn a() {}\n");
-    await writeFile(b, "fn b() {}\n");
-    const env = { CLAUDE_CONFIG_DIR: c, PATH: `${bin}:${process.env.PATH}` };
-
-    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: a }, cwd: crate, session_id: "rc1", env });
-    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: b }, cwd: crate, session_id: "rc1", env });
-    const r = await runHook("format-on-stop.sh", { tool_name: "", tool_input: {}, cwd: crate, session_id: "rc1", env });
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout.trim()).toBe(""); // clean → no finding
-    const log = await readFile(join(bin, "cargo.log"), "utf-8");
-    const checks = log.split("\n").filter((l) => l.startsWith("check")).length;
-    const clippys = log.split("\n").filter((l) => l.startsWith("clippy")).length;
-    expect(checks).toBe(1); // de-duped per crate
-    expect(clippys).toBe(1);
-    await rm(c, { recursive: true, force: true });
-    await rm(bin, { recursive: true, force: true });
-    await rm(crate, { recursive: true, force: true });
+    await rm(file, { force: true });
   });
 
-  it("passes `-D warnings` to clippy when clippy.toml is present", async () => {
+  it("does not run cargo check or clippy when a Rust file was edited, and still rustfmts", async () => {
     const c = await cfg();
     const bin = await mkdtemp(join(tmpdir(), "fakebin-"));
     await makeFakeBin(bin, "cargo");
+    await makeFakeBin(bin, "rustfmt");
     const crate = await mkdtemp(join(tmpdir(), "crate-"));
     await writeFile(join(crate, "Cargo.toml"), "[package]\nname='x'\n");
     await writeFile(join(crate, "clippy.toml"), "msrv = \"1.70\"\n");
     await mkdir(join(crate, "src"), { recursive: true });
-    const a = join(crate, "src", "a.rs");
-    await writeFile(a, "fn a() {}\n");
+    const file = join(crate, "src", "a.rs");
+    await writeFile(file, "fn a() {}\n");
     const env = { CLAUDE_CONFIG_DIR: c, PATH: `${bin}:${process.env.PATH}` };
 
-    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: a }, cwd: crate, session_id: "rc2", env });
-    await runHook("format-on-stop.sh", { tool_name: "", tool_input: {}, cwd: crate, session_id: "rc2", env });
-    const log = await readFile(join(bin, "cargo.log"), "utf-8");
-    expect(log).toContain("-D warnings");
+    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: file }, cwd: crate, session_id: "rc1", env });
+    const result = await runHook("format-on-stop.sh", { tool_name: "", tool_input: {}, cwd: crate, session_id: "rc1", env });
+
+    expect(result.exitCode).toBe(0);
+    await expect(readFile(join(bin, "cargo.log"), "utf-8")).rejects.toThrow();
+    expect(await readFile(join(bin, "rustfmt.log"), "utf-8")).toContain(file);
     await rm(c, { recursive: true, force: true });
     await rm(bin, { recursive: true, force: true });
-    await rm(crate, { recursive: true, force: true });
-  });
-
-  it("surfaces cargo failures as a non-blocking finding (never decision:block)", async () => {
-    const c = await cfg();
-    const bin = await mkdtemp(join(tmpdir(), "fakebin-"));
-    // Fake cargo: emulate a compile error (exit 101 with output).
-    await makeFakeBin(bin, "cargo",
-      `#!/usr/bin/env bash\necho "$@" >> "${join(bin, "cargo.log")}"\necho "error[E0425]: cannot find value \\\`foo\\\` in this scope" >&2\nexit 101\n`);
-    const crate = await mkdtemp(join(tmpdir(), "crate-"));
-    await writeFile(join(crate, "Cargo.toml"), "[package]\nname='x'\n");
-    await mkdir(join(crate, "src"), { recursive: true });
-    const a = join(crate, "src", "a.rs");
-    await writeFile(a, "fn a() { foo }\n");
-    const env = { CLAUDE_CONFIG_DIR: c, PATH: `${bin}:${process.env.PATH}` };
-
-    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: a }, cwd: crate, session_id: "rc3", env });
-    const r = await runHook("format-on-stop.sh", { tool_name: "", tool_input: {}, cwd: crate, session_id: "rc3", env });
-    expect(r.exitCode).toBe(0);
-    const j = extractJsonOrNull(r.stdout);
-    expect(j).not.toBeNull();
-    expect(j.decision ?? "").not.toBe("block");
-    expect(j.systemMessage).toContain("E0425");
-    await rm(c, { recursive: true, force: true });
-    await rm(bin, { recursive: true, force: true });
-    await rm(crate, { recursive: true, force: true });
-  });
-
-  it("skips silently when cargo is absent", async () => {
-    const c = await cfg();
-    const emptyBin = await mkdtemp(join(tmpdir(), "emptybin-"));
-    const crate = await mkdtemp(join(tmpdir(), "crate-"));
-    await writeFile(join(crate, "Cargo.toml"), "[package]\nname='x'\n");
-    await mkdir(join(crate, "src"), { recursive: true });
-    const a = join(crate, "src", "a.rs");
-    await writeFile(a, "fn a() {}\n");
-    const env = { CLAUDE_CONFIG_DIR: c, PATH: emptyBin }; // no cargo on PATH
-
-    await runHook("record.sh", { tool_name: "Edit", tool_input: { file_path: a }, cwd: crate, session_id: "rc4", env });
-    const r = await runHook("format-on-stop.sh", { tool_name: "", tool_input: {}, cwd: crate, session_id: "rc4", env });
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout.trim()).toBe("");
-    await rm(c, { recursive: true, force: true });
-    await rm(emptyBin, { recursive: true, force: true });
     await rm(crate, { recursive: true, force: true });
   });
 });
@@ -425,5 +325,52 @@ describe("format-files.sh (neutral: args/env in, plain text out, no JSON)", () =
     expect(r.stdout).not.toContain("{"); // plain text, not JSON
     await rm(bin, { recursive: true, force: true });
     await rm(f, { force: true });
+  });
+});
+
+describe("format-files.sh: no project compiles", () => {
+  it("rustfmts a Rust file and does not run cargo", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "bin-"));
+    await makeFakeBin(bin, "cargo");
+    await makeFakeBin(bin, "rustfmt");
+    const crate = await mkdtemp(join(tmpdir(), "crate-"));
+    await writeFile(join(crate, "Cargo.toml"), "[package]\nname='x'\n");
+    await mkdir(join(crate, "src"), { recursive: true });
+    const file = join(crate, "src", "a.rs");
+    await writeFile(file, "fn a() {}\n");
+
+    const result = await runNeutralScript("format-files.sh", {
+      args: [file],
+      cwd: crate,
+      env: { PATH: `${bin}:${process.env.PATH}` },
+    });
+
+    expect(result.exitCode).toBe(0);
+    await expect(readFile(join(bin, "cargo.log"), "utf-8")).rejects.toThrow();
+    expect(await readFile(join(bin, "rustfmt.log"), "utf-8")).toContain(file);
+    await rm(bin, { recursive: true, force: true });
+    await rm(crate, { recursive: true, force: true });
+  });
+
+  it("does not run tsc for a TypeScript file", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "bin-"));
+    await makeFakeBin(bin, "npx");
+    const ws = await getHookWorkspace();
+    await mkdir(join(ws.dir, "src"), { recursive: true });
+    const file = join(ws.dir, "src", "skipped.ts");
+    await writeFile(file, "export const n = 1;\n");
+
+    const result = await runNeutralScript("format-files.sh", {
+      args: [file],
+      cwd: ws.dir,
+      env: { PATH: `${bin}:${process.env.PATH}` },
+    });
+
+    expect(result.exitCode).toBe(0);
+    const log = await readFile(join(bin, "npx.log"), "utf-8").catch(() => "");
+    expect(log).not.toContain("tsc");
+    expect(log).not.toContain("--noEmit");
+    await rm(bin, { recursive: true, force: true });
+    await rm(file, { force: true });
   });
 });

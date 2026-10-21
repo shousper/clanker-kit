@@ -1,10 +1,11 @@
 import { afterEach, describe, it, expect } from "bun:test";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
 import { CODE_STANDARDS_DIR, HOOKS_DIR } from "../utils/paths";
-import { collectEditedPaths, buildFormatCommand, resolveStateDir, createHandlers, registerHooks, type ExecOpts, type ExecResult, type HookHandlerDeps } from "../../plugins/kit-omp/omp/hooks";
+import { collectEditedPaths, buildFormatCommand, resolveStateDir, createHandlers, registerHooks, runHookCommand, HookDeadlineError, type ExecOpts, type ExecResult, type HookHandlerDeps } from "../../plugins/kit-omp/omp/hooks";
 
 const PLUGIN_ROOT = "/plugin-root";
 const CWD = "/work";
@@ -441,7 +442,7 @@ function registerWithState(project: { pluginRoot: string; state: string }) {
 }
 
 describe("registerHooks: standards gate integration", () => {
-  it("blocks once, records a full read, and re-arms on compaction using real Bun.spawn", async () => {
+  it("blocks once, records a full read, and re-arms on compaction using the hook spawn", async () => {
     const project = gateProject();
     const original = process.env.KIT_STATE_DIR;
     process.env.KIT_STATE_DIR = project.state;
@@ -498,5 +499,45 @@ describe("registerHooks: standards gate integration", () => {
       if (previous === undefined) delete process.env.KIT_STATE_DIR;
       else process.env.KIT_STATE_DIR = previous;
     }
+  });
+});
+
+
+
+describe("runHookCommand", () => {
+  it("kills a command that exceeds the deadline and does not leave it running", async () => {
+    const pidFile = join(tmpdir(), `kit-deadline-${Date.now()}.pid`);
+    const started = Date.now();
+    const pending = runHookCommand("bash", ["-c", `sleep 30 & echo $! > ${pidFile}; wait`], {
+      cwd: tmpdir(),
+      env: process.env as Record<string, string>,
+      deadlineMs: 400,
+    });
+    await expect(pending).rejects.toBeInstanceOf(HookDeadlineError);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+
+    let stat = "";
+    try {
+      stat = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    } catch {
+      stat = "";
+    }
+    expect(stat === "" || stat.startsWith("Z")).toBe(true);
+    rmSync(pidFile, { force: true });
+  });
+});
+
+describe("createHandlers: format deadline", () => {
+  it("notifies and still returns when formatting exceeds the hook deadline", async () => {
+    const deps = fakeDeps(async () => {
+      throw new HookDeadlineError(200);
+    });
+    const handlers = createHandlers(PLUGIN_ROOT, deps);
+
+    await handlers.toolResult({ toolName: "write", input: { path: "/proj/a.go" }, isError: false }, ctxFor("S1"));
+    await expect(handlers.sessionStop({}, ctxFor("S1"))).resolves.toBeUndefined();
+
+    expect(deps.notifications).toEqual(["formatter stopped after 200ms"]);
   });
 });

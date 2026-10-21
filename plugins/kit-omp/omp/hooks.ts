@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { readdirSync, statSync, unlinkSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
@@ -111,6 +112,7 @@ export interface ExecResult {
 export interface ExecOpts {
   cwd: string;
   env?: Record<string, string>;
+  deadlineMs?: number;
 }
 
 export type ExecFn = (command: string, args: string[], opts: ExecOpts) => Promise<ExecResult>;
@@ -187,8 +189,10 @@ export function createHandlers(
       const result = await deps.exec(command, args, { cwd });
       const summary = result.stdout.trim();
       if (summary) deps.notify(summary);
-    } catch {
-      // A formatting failure must never affect the session.
+    } catch (error) {
+      // A formatting failure must never affect the session. A deadline is the
+      // one failure worth surfacing: the turn settled, and the format did not finish.
+      if (error instanceof HookDeadlineError) deps.notify(error.message);
     }
   };
 
@@ -266,21 +270,110 @@ export function createHandlers(
 // OMP runtime wiring
 // ---------------------------------------------------------------------------
 
+/** OMP awaits extension handlers for 30s, then abandons them without killing
+ *  the child. Settle and kill the process group before that budget, or a hung
+ *  formatter becomes the hook timeout and keeps running afterward. */
+export const HOOK_DEADLINE_MS = 20_000;
+
+export class HookDeadlineError extends Error {
+  constructor(deadlineMs: number) {
+    super(`formatter stopped after ${deadlineMs}ms`);
+    this.name = "HookDeadlineError";
+  }
+}
+
+const liveGroups = new Set<number>();
+let exitArmed = false;
+
+function killGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+}
+
+function childPids(pid: number): number[] {
+  const listed = Bun.spawnSync(["pgrep", "-P", String(pid)]);
+  if (listed.exitCode !== 0) return [];
+  return listed.stdout.toString().split("\n").map(Number).filter((id) => id > 0);
+}
+
+function killTree(pid: number): void {
+  for (const child of childPids(pid)) killTree(child);
+  killGroup(pid);
+}
+
+function armExitKill(): void {
+  if (exitArmed) return;
+  exitArmed = true;
+  process.on("exit", () => {
+    for (const pid of liveGroups) killTree(pid);
+  });
+}
+
+/** `detached` makes the script a process-group leader so the deadline can kill
+ *  it and the formatters it started. The parent still waits; the exit hook
+ *  covers a session that dies first. */
+export function runHookCommand(
+  command: string,
+  args: string[],
+  opts: ExecOpts & { env: NodeJS.ProcessEnv; deadlineMs?: number },
+): Promise<ExecResult> {
+  const deadlineMs = opts.deadlineMs ?? HOOK_DEADLINE_MS;
+  const { promise, resolve, reject } = Promise.withResolvers<ExecResult>();
+  const child = spawn(command, args, {
+    cwd: opts.cwd,
+    env: opts.env,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const pid = child.pid;
+  if (pid !== undefined) {
+    liveGroups.add(pid);
+    armExitKill();
+  }
+  let stdout = "";
+  let stderr = "";
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr?.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  let settled = false;
+  const finish = (fn: () => void) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    if (pid !== undefined) liveGroups.delete(pid);
+    fn();
+  };
+  const timer = setTimeout(() => {
+    if (pid !== undefined) killTree(pid);
+    finish(() => reject(new HookDeadlineError(deadlineMs)));
+  }, deadlineMs);
+  child.on("error", (error) => finish(() => reject(error)));
+  child.on("close", (code) => finish(() => resolve({ stdout, stderr, code: code ?? 1 })));
+  return promise;
+}
+
 /** Spawns a shared script with the session cwd and the kit env vars the
- *  scripts read (KIT_PLUGIN_ROOT/KIT_STATE_DIR). Bun's spawn is used directly,
- *  as the sibling plugins do, because `ExtensionAPI.exec` exposes neither an
- *  `env` nor a `cwd` option. */
+ *  scripts read (KIT_PLUGIN_ROOT/KIT_STATE_DIR). The child is spawned directly
+ *  because `ExtensionAPI.exec` exposes neither an `env` nor a `cwd` option. */
 function buildExec(env: Record<string, string>): ExecFn {
-  return async (command, args, opts) => {
-    const proc = Bun.spawn([command, ...args], {
+  return (command, args, opts) =>
+    runHookCommand(command, args, {
       cwd: opts.cwd,
       env: { ...process.env, ...env, ...(opts.env ?? {}) },
-      stdout: "pipe",
-      stderr: "pipe",
+      deadlineMs: opts.deadlineMs,
     });
-    const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    return { stdout, stderr, code };
-  };
 }
 
 /**
