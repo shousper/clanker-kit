@@ -53,4 +53,18 @@ export const STANDARDS_CASES: StandardsCase[] = [
       return src.includes("className=") && !src.includes("style={{");
     },
   },
+  {
+    lang: "python",
+    workspace: "python",
+    target: "src/inventory/stock.py",
+    prompt: `In src/inventory/stock.py, add a function named needs_restock that takes units_on_hand and reorder_level as ints and returns True when units_on_hand is below reorder_level. ${NO_SHELL}`,
+    landed: async (cwd) => /def needs_restock\(/.test(await read(cwd, "src/inventory/stock.py")),
+  },
+  {
+    lang: "cpp",
+    workspace: "cpp",
+    target: "src/main.cpp",
+    prompt: `In src/main.cpp, make the program print v1.2.3 and exit when its only argument is --version. ${NO_SHELL}`,
+    landed: async (cwd) => (await read(cwd, "src/main.cpp")).includes("v1.2.3"),
+  },
 ];

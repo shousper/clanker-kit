@@ -11,10 +11,10 @@ import { join } from "path";
 import { resultFor, type Harness, type NormalizedEvent, type ToolCallEvent } from "./harness/types";
 import { parseStreamJson } from "./stream-json";
 
-export type StandardsLang = "go" | "rust" | "hcl" | "tailwindcss";
+export type StandardsLang = "go" | "rust" | "hcl" | "tailwindcss" | "python" | "cpp";
 
 interface LangSpec {
-  /** Files the gate maps to this language (the project signal for Tailwind is the fixture's job). */
+  /** Files the gate maps to this language (the project signal for Tailwind and for shared C and C++ files is the fixture's job). */
   file: RegExp;
 }
 
@@ -23,6 +23,8 @@ export const STANDARDS_LANGS: Record<StandardsLang, LangSpec> = {
   rust: { file: /(\.rs|(^|\/)Cargo\.toml)$/ },
   hcl: { file: /(\.(tf|tofu|tfvars)|\.tofu\.json)$/ },
   tailwindcss: { file: /\.(css|tsx|jsx|vue|svelte|astro|html)$/ },
+  python: { file: /(\.pyi?|(^|\/)pyproject\.toml)$/ },
+  cpp: { file: /(\.(cpp|cc|cxx|hpp|hh|hxx|ipp|tpp|inl|h|cmake)|(^|\/)(CMakeLists\.txt|CMakePresets\.json))$/ },
 };
 
 /** Substring of every gate block reason (shared/hooks/standards-gate.sh). */
