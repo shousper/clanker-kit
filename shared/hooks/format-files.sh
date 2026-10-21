@@ -204,122 +204,6 @@ handle_eslint() {
   printf 'eslint reported issues:\n'
   printf '%b' "$findings"
 }
-# --- tsc discovery (ported from hooks/typescript.sh) --------------------------
-
-# Does <package.json> declare typescript in (dev)dependencies?
-kit_has_typescript_dep() {  # kit_has_typescript_dep <package.json>
-  [ -f "$1" ] || return 1
-  jq -e '.dependencies.typescript or .devDependencies.typescript' "$1" >/dev/null 2>&1
-}
-
-# Walk from <dir> up to <root> (inclusive) for the nearest dir holding tsconfig.json.
-kit_nearest_tsconfig() {  # kit_nearest_tsconfig <dir> <root>
-  local d="$1"
-  while :; do
-    [ -f "$d/tsconfig.json" ] && { printf '%s' "$d"; return 0; }
-    [ "$d" = "$2" ] && return 1
-    case "$d" in "$2"/*) ;; *) return 1 ;; esac
-    [ "$d" = "/" ] && return 1
-    d="${d%/*}"; [ -n "$d" ] || d="/"
-  done
-}
-
-# Resolve the tsconfig dir for a touched .ts file, honoring typescript.sh's gates
-# (npm prefix within CWD; package.json with typescript dep; tsconfig below it).
-# Prints the tsconfig dir, or returns 1 (caller skips silently).
-kit_tsc_config_dir() {  # kit_tsc_config_dir <file> <cwd>
-  local file_dir prefix proj cur
-  file_dir="$(dirname "$1")"
-  prefix="$(cd "$file_dir" 2>/dev/null && npm prefix 2>/dev/null)"
-  [ -n "$prefix" ] || return 1
-  case "$prefix" in "$2"|"$2"/*) ;; *) return 1 ;; esac
-
-  proj=""; cur="$file_dir"
-  while :; do
-    if [ -f "$cur/package.json" ] && kit_has_typescript_dep "$cur/package.json"; then
-      proj="$cur"; break
-    fi
-    case "$cur" in "$2"|"$2"/*) ;; *) break ;; esac
-    [ "$cur" = "$2" ] && break
-    [ "$cur" = "/" ] && break
-    cur="${cur%/*}"; [ -n "$cur" ] || cur="/"
-  done
-  [ -n "$proj" ] || return 1
-
-  kit_nearest_tsconfig "$file_dir" "$proj"
-}
-
-# tsc: group touched .ts/.tsx by resolved tsconfig project; run `npx tsc --noEmit`
-# once per project (cd into the config dir). Non-zero exit → output as a finding
-# (NEVER decision:block). Silent-skip when npx/dep/tsconfig absent.
-handle_tsc() {
-  [ -n "$1" ] || return 0
-  command -v npx >/dev/null 2>&1 || return 0
-
-  local cwd files f cfgdir
-  cwd="$(pwd)"
-  mapfile -t files <<<"$1"
-
-  local -a cfgdirs=()
-  declare -A seen=()
-  for f in "${files[@]}"; do
-    [ -f "$f" ] || continue
-    cfgdir="$(kit_tsc_config_dir "$f" "$cwd")" || continue
-    [ -n "${seen[$cfgdir]:-}" ] && continue
-    seen[$cfgdir]=1; cfgdirs+=("$cfgdir")
-  done
-  [ "${#cfgdirs[@]}" -gt 0 ] || return 0
-
-  local findings="" out
-  for cfgdir in "${cfgdirs[@]}"; do
-    if ! out="$(cd "$cfgdir" && npx tsc --noEmit --pretty false 2>&1)"; then
-      [ -n "$out" ] && findings="${findings}tsc (${cfgdir}):\n${out}\n\n"
-    fi
-  done
-
-  [ -z "$findings" ] && return 0
-  printf 'tsc reported issues:\n'
-  printf '%b' "$findings"
-}
-
-# Rust checks: from touched .rs/Cargo.toml, derive the unique nearest-Cargo.toml
-# crate dirs; per crate run `cargo check` and `cargo clippy` once (clippy strict
-# with `-D warnings` when a clippy.toml is present, matching hooks/clippy.sh).
-# Findings are non-blocking. Skip silently if cargo is absent.
-handle_rust_checks() {
-  [ -n "$1" ] || return 0
-  command -v cargo >/dev/null 2>&1 || return 0
-
-  local files f dir crate
-  mapfile -t files <<<"$1"
-
-  # One nearest-Cargo.toml resolution per file → unique crate dir set.
-  local -a crates=()
-  declare -A seen=()
-  for f in "${files[@]}"; do
-    [ -f "$f" ] || continue
-    crate="$(kit_nearest_dir "$(dirname "$f")" Cargo.toml)" || continue
-    [ -n "${seen[$crate]:-}" ] && continue
-    seen[$crate]=1; crates+=("$crate")
-  done
-  [ "${#crates[@]}" -gt 0 ] || return 0
-
-  local findings="" out
-  for dir in "${crates[@]}"; do
-    if ! out="$(cd "$dir" && cargo check --message-format=short 2>&1)"; then
-      [ -n "$out" ] && findings="${findings}cargo check (${dir}):\n${out}\n\n"
-    fi
-    local clippy_args=(clippy --message-format=short)
-    { [ -f "$dir/.clippy.toml" ] || [ -f "$dir/clippy.toml" ]; } && clippy_args+=(-- -D warnings)
-    if ! out="$(cd "$dir" && cargo "${clippy_args[@]}" 2>&1)"; then
-      [ -n "$out" ] && findings="${findings}cargo clippy (${dir}):\n${out}\n\n"
-    fi
-  done
-
-  [ -z "$findings" ] && return 0
-  printf 'Rust checks reported issues:\n'
-  printf '%b' "$findings"
-}
 
 # Nearest ancestor dir (inclusive) whose ruff config applies: ruff.toml,
 # .ruff.toml, or a pyproject.toml with a [tool.ruff] table. Prints it, or returns 1.
@@ -427,8 +311,7 @@ run gofmt         '*.go'
 run rustfmt       '*.rs'
 run hcl           '*.tf' '*.tofu' '*.tofu.json' '*.tfvars'
 run eslint        '*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs'
-run tsc           '*.ts' '*.tsx'
-run rust_checks   '*.rs' '*Cargo.toml'
+# cargo check, clippy, and tsc are not hook work.
 run ruff          '*.py' '*.pyi'
 run clang_format  '*.cpp' '*.cc' '*.cxx' '*.hpp' '*.hh' '*.hxx' '*.ipp' '*.tpp' '*.inl' '*.h'
 

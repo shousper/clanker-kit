@@ -101,13 +101,13 @@ Each stage flows into the next automatically. You can enter at any point if you 
 | PreToolUse | `standards-check.sh` | Edit/Write/MultiEdit — blocks an agent's first edit in Go, Rust, HCL, Tailwind CSS, Python or C++ until it has read the shared scope rules, the language's core standards, and the project standards when the edit changes build or tool configuration; asks once per standards file per agent, and allows the edit if the check itself fails |
 | PostToolUse | `standards-seen.sh` | Read — marks a standards file as loaded when the agent reads it in full; a ranged read doesn't count |
 | PostToolUse | `record.sh` | Write/Edit — records edited source paths (Go, Rust, JS/TS, Python, C++, HCL/Terraform/OpenTofu) to an agent-scoped scratch; never modifies files |
-| Stop + SubagentStop | `format-on-stop.sh` | End of turn — formats the touched files and runs checks once (ruff and clang-format run only in projects that configure them), surfacing results as a single non-blocking message (advisory, not mid-turn blocking) |
+| Stop + SubagentStop | `format-on-stop.sh` | End of turn — formats the touched files and runs checks once (ruff and clang-format run only in projects that configure them), surfacing results as a single non-blocking message. It does not run `cargo check`, `cargo clippy`, or `tsc` |
 | SessionStart | `session-start.sh` | Session startup, resume, clear, compact — kit intro |
 | SessionStart | `hcl-detect.sh` | Startup/resume — one-time HCL tool-detection notice |
 | SessionStart | `standards-reset.sh` | Clear/compact — forgets which standards files were loaded, because the text has left the context |
 | SessionStart + SessionEnd | `state-cleanup.sh` | Maps Claude's session events onto the shared `state-cleanup.sh`: session start runs `prune`, and session end with reason `clear` runs `forget` |
 
-To skip formatters or checkers, set `KIT_FORMAT_SKIP` to a space- or comma-separated list of handler names, or to `all`. The handlers are `gofmt`, `rustfmt`, `hcl`, `eslint`, `tsc`, `rust_checks`, `ruff` and `clang_format`. Both harnesses read the variable from the environment of the harness process. For example:
+To skip formatters, set `KIT_FORMAT_SKIP` to a space- or comma-separated list of handler names, or to `all`. The handlers are `gofmt`, `rustfmt`, `hcl`, `eslint`, `ruff` and `clang_format`. Both harnesses read the variable from the environment of the harness process. For example:
 
 ```bash
 export KIT_FORMAT_SKIP=ruff
@@ -115,7 +115,7 @@ export KIT_FORMAT_SKIP=ruff
 
 Both harnesses share one state cleanup, `shared/hooks/state-cleanup.sh`. At session start it prunes kit state files (standards-gate state and formatter scratch) that are 48 hours old or older. When the conversation is cleared (Claude `/clear`, OMP `/new`) it forgets that session's state files, because the context they described is gone. A resumed or forked session keeps its state.
 
-On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`, `tool_result`, and `session_compact` events, and runs the cleanup from the `session_start` and `session_before_switch` events.
+On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`, `tool_result`, `session_stop`, and `session_compact` events, and runs the cleanup from the `session_start` and `session_before_switch` events. The formatter is the shared script, so it does not run `cargo check`, `cargo clippy`, or `tsc`.
 
 ## Agents
 
