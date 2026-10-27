@@ -21,6 +21,7 @@
 - Run every tool through the project's environment manager. If the project uses Poetry or Hatch, use its run command in place of `uv run`.
 - Never use the system Python, and never install a package into it.
 - If the project uses uv, run `uv sync --locked` before the first `uv run`. Change a dependency with `uv add` or `uv remove`. If `uv.lock` is stale for another reason, stop and report it.
+- For advisory checks, consider running `uv audit --locked` in CI.
 - Fix and format only the files that the task changes: `uv run ruff check --fix PATH` and `uv run ruff format PATH`.
 - Never pass `--select` to ruff on the command line. It replaces the configured rule set.
 - If a check fails only in an unchanged file, report it and leave the file alone.
@@ -92,13 +93,13 @@ except OSError:
 ## Security
 
 - Treat every value from a network, a file, an environment variable, or a user as untrusted.
-- Never call `eval` or `exec`. Never unpickle untrusted data.
+- Never call `eval` or `exec`. Never load untrusted data with a loader that runs code: `pickle`, `torch.load(weights_only=False)`, `joblib.load`, `numpy.load(allow_pickle=True)`, or `trust_remote_code=True`.
+- Accept a path from untrusted input only if `(root / name).resolve().is_relative_to(root.resolve())`. Never test it with a string prefix.
 - Never run a shell command built from a string. Call `subprocess.run` with an argument list and no `shell=True`.
 - Never build SQL with string formatting. Use parameterized queries.
 - Load YAML only with `yaml.safe_load`.
 - Generate a token with the `secrets` module. Never use `random` for a secret.
 - Compare secrets with `hmac.compare_digest`.
-- The ruff `S` rules report most of these defects.
 
 ## Code organization
 

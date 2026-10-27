@@ -7,7 +7,7 @@ These rules apply when the task creates a project or changes its build or tool c
 - Require CMake 3.25 or newer and commit a `CMakePresets.json` file.
 - Compile as C++20 with `CMAKE_CXX_STANDARD 20`, `CMAKE_CXX_STANDARD_REQUIRED ON`, and `CMAKE_CXX_EXTENSIONS OFF`.
 - The toolchain must provide `<format>`, `<span>`, `<ranges>`, `<stop_token>`, and `std::jthread` with no extra flags. GCC 13, Clang 18 with libstdc++ 13, and Visual Studio 2022 17.2 meet this requirement.
-- Pin every dependency by version and hash. Use a package manager such as vcpkg or Conan, or `FetchContent` with `URL_HASH`. Never fetch a moving branch or an unpinned tag.
+- Pin every dependency by version and hash. Use a package manager such as vcpkg or Conan, `FetchContent` with `URL_HASH`, or a `GIT_TAG` set to a full commit SHA. Never fetch by branch or tag name, because both can move.
 - Mark third-party include directories as `SYSTEM` so that their warnings stay out of the build.
 
 ## Warnings
@@ -36,6 +36,7 @@ Release builds use these flags, which come from the OpenSSF Compiler Options Har
 | Protection | GCC and Clang | Visual Studio |
 |---|---|---|
 | Checked C library calls | `-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3` at `-O1` or higher, with glibc 2.34 or newer | |
+| Bounds of trailing arrays | `-fstrict-flex-arrays=3` | |
 | Stack canaries | `-fstack-protector-strong` | `/GS`, on by default |
 | Stack clash checks | `-fstack-clash-protection` on Linux | |
 | Control-flow integrity | `-fcf-protection=full` on x86-64, `-mbranch-protection=standard` on AArch64 | `/guard:cf` for the compiler and the linker, `/CETCOMPAT` for the linker on x64 |
@@ -44,7 +45,7 @@ Release builds use these flags, which come from the OpenSSF Compiler Options Har
 | Position-independent code | `CMAKE_POSITION_INDEPENDENT_CODE ON` after `check_pie_supported()` | |
 | Compiler security checks | | `/sdl` |
 
-- Debug and test builds enable the hardening mode of the standard library: `-D_GLIBCXX_ASSERTIONS` for libstdc++, and `-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE` for libc++.
+- Every build enables the hardening mode of the standard library. For libstdc++, use `-D_GLIBCXX_ASSERTIONS`. For libc++, use `-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST` in release builds and `_LIBCPP_HARDENING_MODE_EXTENSIVE` in debug and test builds.
 - CI runs the test suite once with `-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer`. Visual Studio supports only `/fsanitize=address`.
 - CI runs the concurrency tests once more with `-fsanitize=thread` in a separate build.
 

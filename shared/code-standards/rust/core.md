@@ -81,18 +81,14 @@ let pages = futures::future::join_all(urls.iter().map(|url| fetch_page(url))).aw
 - Put integration tests in `tests/`. They use only the public API.
 - Mark async tests with `#[tokio::test]`.
 
-## Secrets
-
-Never hardcode a secret in source. Read it from the environment or a secret store.
-
 ## Tools and CI
 
 Run these checks in CI:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-cargo audit
-cargo deny check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-features
 ```
+
+For advisory and license checks, consider adding `cargo audit` and `cargo deny check`. Install a cargo tool with `cargo install --locked TOOL@VERSION`.

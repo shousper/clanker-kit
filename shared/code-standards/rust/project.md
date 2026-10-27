@@ -5,7 +5,7 @@ These rules apply when the task creates a project or changes its build or tool c
 ## Toolchain
 
 - Use edition 2024, and set `rust-version` once, in `[workspace.package]`.
-- Commit `Cargo.lock` for binaries and pin the toolchain with `rust-toolchain.toml`.
+- Commit `Cargo.lock` for every crate, and pin the toolchain with `rust-toolchain.toml`.
 
 ## Workspace layout
 

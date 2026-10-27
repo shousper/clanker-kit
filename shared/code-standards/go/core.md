@@ -63,6 +63,7 @@ names := []string{}
 - Write table-driven tests for multiple scenarios.
 - Mock interfaces, not implementations.
 - Run tests with `-race`.
+- For advisory checks, consider running `govulncheck ./...` in CI.
 
 ## Style
 

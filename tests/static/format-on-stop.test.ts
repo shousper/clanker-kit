@@ -408,6 +408,19 @@ describe("format-on-stop.sh: ruff", () => {
     await t.done();
   });
 
+  it("never uses a ruff config or .venv above the session CWD", async () => {
+    const t = await setup({ name: "ruff.toml", body: "" });
+    const venvBin = join(t.ws, ".venv", "bin");
+    await mkdir(venvBin, { recursive: true });
+    await makeFakeBin(venvBin, "ruff", cwdLoggingBody(venvBin, "ruff"));
+    const session = join(t.ws, "src");
+    const r = await stopWith(t.c, session, "ru8", [t.app], `${t.bin}:${process.env.PATH}`);
+    expect(r.exitCode).toBe(0);
+    await expect(readFile(join(venvBin, "ruff.log"), "utf-8")).rejects.toThrow();
+    await expect(readFile(join(t.bin, "ruff.log"), "utf-8")).rejects.toThrow();
+    await t.done();
+  });
+
   it("surfaces ruff check findings in the summary", async () => {
     const t = await setup({ name: "pyproject.toml", body: "[tool.ruff]\n" });
     await makeFakeBin(t.bin, "ruff",

@@ -62,6 +62,7 @@ resource "aws_instance" "web" {
 
 - Set `required_version` with a pessimistic `~>` constraint.
 - Pin every provider in `required_providers` with a `source` and a `~>` version.
+- Pin every `module` to an exact registry `version`, or a git `?ref=` set to a commit SHA. `.terraform.lock.hcl` records providers, not modules.
 
 ```hcl
 terraform {
@@ -78,7 +79,7 @@ terraform {
 
 ## Anti-patterns
 
-- Never hardcode secrets or credentials. Read them from a secrets manager or provider environment variables.
+- Never add a provisioner or an `external` data source unless the task asks. In `local-exec`, pass values through `environment`, never into `command`.
 - Never declare `provider` blocks in a reusable module. Pass providers in from the root module.
 - Avoid `terraform_remote_state` when a data source reads the same value.
 

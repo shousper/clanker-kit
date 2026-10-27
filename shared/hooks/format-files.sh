@@ -205,16 +205,19 @@ handle_eslint() {
   printf '%b' "$findings"
 }
 
-# Nearest ancestor dir (inclusive) whose ruff config applies: ruff.toml,
+# Nearest ancestor dir (inclusive) within <cwd> whose ruff config applies: ruff.toml,
 # .ruff.toml, or a pyproject.toml with a [tool.ruff] table. Prints it, or returns 1.
-kit_ruff_root() {  # kit_ruff_root <dir>
+# The walk stops at <cwd>: handle_ruff runs <root>/.venv/bin/ruff, and a root outside the
+# session, such as /tmp, can hold a binary another user planted.
+kit_ruff_root() {  # kit_ruff_root <dir> <cwd>
   local d="$1"
   while :; do
+    case "$d" in "$2"|"$2"/*) ;; *) return 1 ;; esac
     { [ -f "$d/ruff.toml" ] || [ -f "$d/.ruff.toml" ]; } && { printf '%s' "$d"; return 0; }
     if [ -f "$d/pyproject.toml" ] && grep -q '^\[tool\.ruff' "$d/pyproject.toml" 2>/dev/null; then
       printf '%s' "$d"; return 0
     fi
-    [ "$d" = "/" ] && return 1
+    [ "$d" = "$2" ] && return 1
     d="${d%/*}"; [ -n "$d" ] || d="/"
   done
 }
@@ -223,13 +226,14 @@ kit_ruff_root() {  # kit_ruff_root <dir>
 # project. Projects without a ruff config are left alone; they may use another tool.
 handle_ruff() {
   [ -n "$1" ] || return 0
-  local files f root ruff out findings=""
+  local cwd files f root ruff out findings=""
+  cwd="$(pwd)"
   mapfile -t files <<<"$1"
   local -a roots=()
   declare -A by_root=()
   for f in "${files[@]}"; do
     [ -f "$f" ] || continue
-    root="$(kit_ruff_root "$(dirname "$f")")" || continue
+    root="$(kit_ruff_root "$(dirname "$f")" "$cwd")" || continue
     [ -n "${by_root[$root]:-}" ] || roots+=("$root")
     by_root[$root]="${by_root[$root]:-}${f}"$'\n'
   done

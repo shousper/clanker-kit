@@ -200,10 +200,10 @@ Measure before you change, and keep the benchmark that proves a gain. On the per
 
 ## Security
 
-- Check a length before every index, copy, or allocation it controls, and check for overflow before an integer sizes one.
+- Check a length before every index, copy, or allocation it controls. Check for overflow with `__builtin_add_overflow` or by testing the operands first, never the signed result.
 - Never compose a shell command. Spawn a process with an argument vector through one wrapper.
 - Check and open a file in one operation. A separate `exists()` then `open()` is a race.
-- Before you serve a file, compare its canonical path with the canonical root component by component, because a string prefix test accepts `/srv/data-x` for `/srv/data`. Open the resolved path, never the candidate.
+- Open an untrusted path beneath a directory descriptor for the root: `openat2` with `RESOLVE_BENEATH` on Linux, `openat` with `O_NOFOLLOW` per component elsewhere.
 - Wipe a secret with `explicit_bzero` or `sodium_memzero`, because the compiler removes a plain `memset`. Compare a secret in constant time.
 - Never use `<random>` for a secret.
 - Never "fix" undefined behavior with `-fno-strict-aliasing` or `-fwrapv`.
