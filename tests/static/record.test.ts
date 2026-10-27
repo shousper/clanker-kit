@@ -28,3 +28,18 @@ describe("record.sh", () => {
     await rm(c, { recursive: true, force: true });
   });
 });
+
+describe("record.sh: python and c++ sources", () => {
+  for (const file of ["/proj/app.py", "/proj/main.cpp"]) {
+    it(`records ${file}`, async () => {
+      const c = await cfg();
+      const r = await runHook("record.sh", {
+        tool_name: "Edit", tool_input: { file_path: file }, cwd: c,
+        session_id: "S3", env: { CLAUDE_CONFIG_DIR: c },
+      });
+      expect(r.exitCode).toBe(0);
+      expect(await readFile(join(c, "kit/state/touched-S3.txt"), "utf-8")).toContain(file);
+      await rm(c, { recursive: true, force: true });
+    });
+  }
+});

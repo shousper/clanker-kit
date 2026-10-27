@@ -3,7 +3,7 @@
 // Used by the /reports:skills extension command and runnable directly:
 //   bun report.ts [RANGE] [--sun|--mon]    (see RANGE_HELP in ../../lib/range.ts)
 
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { type Dirent, existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parseRangeArgs } from "../../lib/args.ts";
 import { type RenderedReport, type ReportResult, type Section, runCli } from "../../lib/command.ts";
@@ -150,40 +150,118 @@ async function installedSkills(dir: string): Promise<InstalledSkill[]> {
 	}));
 }
 
-// Standards adoption: did an agent read a language's code standards before editing that language?
-// kit's standards gate (shared/hooks/standards-gate.sh) blocks an agent's first edit in a language until it
-// reads `code-standards/<lang>/CLAUDE.md`. The unit is a pair of one agent transcript (a top-level session or
-// a subagent) and one language. Edits made through the shell are not visible in transcripts.
+// Standards adoption: did an agent read the code standards before editing a language? kit's standards gate
+// (shared/hooks/standards-gate.sh) blocks an agent's first edit in a language until it reads that language's units:
+// `code-standards/scope.md`, `code-standards/<lang>/core.md` and, for build and tool config, `<lang>/project.md`.
+// A unit is named `scope`, `<lang>` (the core file) or `<lang>:project`. The report pairs one agent transcript
+// (a top-level session or a subagent) with one unit. Edits made through the shell are not visible in transcripts.
 
 interface StandardsLang {
 	id: string;
 	label: string;
-	/** Exact basenames the gate treats as this language. */
+	/** Exact basenames the gate treats as this language's source (its core unit). */
 	names: string[];
-	/** Basename suffixes the gate treats as this language. */
+	/** Basename suffixes the gate treats as this language's source. */
 	suffixes: string[];
+	/** Exact basenames of build and tool config: the `<lang>:project` unit. */
+	projectNames: string[];
+	/** Basename suffixes of build and tool config: the `<lang>:project` unit. */
+	projectSuffixes: string[];
 	/** Gated only inside a project with `tailwind.config.*` or a `tailwindcss` dependency. */
 	tailwind?: true;
+	/** C and C++ share some files: this language's project files and `sharedSuffixes` count only inside a C++ repository. */
+	cppRoot?: true;
+	/** Basename suffixes shared with another language, counted as source only when `cppRoot` holds. */
+	sharedSuffixes?: string[];
 }
 
-// Mirrors the language table in shared/hooks/standards-gate.sh. Python has no standards file and no gate, so
-// it is not tracked: a "read" of a placeholder would measure nothing.
+// Mirrors gate_units_for in shared/hooks/standards-gate.sh. Project files are checked before source suffixes.
+// The gate also counts a shared C/C++ file when this agent already has C++ state; a transcript cannot tell, so
+// the report uses the repository test alone.
 const STANDARDS_LANGS: StandardsLang[] = [
-	{ id: "go", label: "Go", names: ["go.mod", "go.sum"], suffixes: [".go"] },
-	{ id: "rust", label: "Rust", names: ["Cargo.toml"], suffixes: [".rs"] },
-	{ id: "hcl", label: "HCL", names: [], suffixes: [".tf", ".tofu", ".tofu.json", ".tfvars"] },
+	{ id: "go", label: "Go", names: ["go.mod", "go.sum"], suffixes: [".go"], projectNames: [], projectSuffixes: [] },
+	{
+		id: "rust",
+		label: "Rust",
+		names: [],
+		suffixes: [".rs"],
+		projectNames: ["Cargo.toml", "clippy.toml", "rust-toolchain.toml"],
+		projectSuffixes: [],
+	},
+	{ id: "hcl", label: "HCL", names: [], suffixes: [".tf", ".tofu", ".tofu.json", ".tfvars"], projectNames: [], projectSuffixes: [] },
 	{
 		id: "tailwindcss",
 		label: "Tailwind CSS",
 		names: [],
 		suffixes: [".css", ".tsx", ".jsx", ".vue", ".svelte", ".astro", ".html"],
+		projectNames: [],
+		projectSuffixes: [],
 		tailwind: true,
+	},
+	{
+		id: "python",
+		label: "Python",
+		names: [],
+		suffixes: [".py", ".pyi"],
+		projectNames: ["pyproject.toml"],
+		projectSuffixes: [],
+	},
+	{
+		id: "cpp",
+		label: "C++",
+		names: [],
+		suffixes: [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".ipp", ".tpp", ".inl"],
+		projectNames: ["CMakeLists.txt", "CMakePresets.json", ".clang-tidy", ".clang-format"],
+		projectSuffixes: [".cmake"],
+		cppRoot: true,
+		sharedSuffixes: [".h"],
 	},
 ];
 
+const CPP_SOURCES = [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"];
+const CPP_PRUNE = new Set([".git", "node_modules", "vendor", "third_party", "build"]);
+const cppRoots = new Map<string, boolean>();
+
+/** The gate's repository root for a file: nearest ancestor with `.git`, else the file's directory. */
+function repoRoot(dir: string): string {
+	for (let d = dir; ; d = dirname(d)) {
+		if (existsSync(join(d, ".git"))) return d;
+		if (dirname(d) === d) return dir;
+	}
+}
+
+/** A C++ source within five levels of `dir`, skipping the directories the gate prunes. */
+function hasCppSource(dir: string, depth: number): boolean {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return false;
+	}
+	for (const e of entries) {
+		if (e.isDirectory()) {
+			if (CPP_PRUNE.has(e.name) || e.name.startsWith("cmake-build-")) continue;
+			if (depth < 5 && hasCppSource(join(dir, e.name), depth + 1)) return true;
+		} else if (e.isFile() && CPP_SOURCES.some(x => e.name.endsWith(x))) return true;
+	}
+	return false;
+}
+
+/** The gate's `gate_has_cpp`, checked against the disk as it is now and cached per repository root. */
+function cppProject(dir: string): boolean {
+	const root = repoRoot(dir);
+	let hit = cppRoots.get(root);
+	if (hit === undefined) {
+		hit = hasCppSource(root, 1);
+		cppRoots.set(root, hit);
+	}
+	return hit;
+}
+
 interface StdEvent {
 	kind: "edit" | "read" | "block";
-	lang: string;
+	/** `scope`, a language id (its core file), or `<lang>:project`. */
+	unit: string;
 	at: number;
 	/** Kit root that holds the standards: from a block reason's path, or from the file a read resolved to. */
 	root?: string;
@@ -194,17 +272,38 @@ interface StdCall {
 	kind: "edit" | "read";
 	path?: string;
 	paths: string[];
-	lang?: string;
+	unit?: string;
 }
 
 const EDIT_TOOLS: Record<string, true> = { edit: true, write: true, apply_patch: true };
 const EDIT_CALL = /"name":"(?:edit|write|apply_patch)"/;
 const TOOL_CALL_ID = /"toolCallId":"([^"]+)"/;
 // A full read of a standards file: no `:50-80` range, no URL. `:raw` is still a full read, as in the gate.
-const STANDARDS_PATH = /(?:^|\/)code-standards\/([a-z]+)\/CLAUDE\.md(?::raw)?$/;
-const STANDARDS_TAIL = /\/code-standards\/[a-z]+\/CLAUDE\.md(?::raw)?$/;
-// The gate's block reason: `kit: before editing FILE, read the LABEL standards in full at ROOT/code-standards/LANG/CLAUDE.md and follow ...`
-const BLOCK_REASON = /^kit: before editing .+?, read the .+? standards in full at (.+)\/code-standards\/([a-z]+)\/CLAUDE\.md and follow /;
+// History from before the unit layout names `code-standards/<lang>/CLAUDE.md`, which counts as the language's core unit.
+const STANDARDS_PATH = /(?:^|\/)code-standards\/(?:scope|([a-z]+)\/(core|project))\.md(?::raw)?$/;
+const LEGACY_STANDARDS_PATH = /(?:^|\/)code-standards\/([a-z]+)\/CLAUDE\.md(?::raw)?$/;
+const STANDARDS_TAIL = /\/code-standards\/(?:scope\.md|[a-z]+\/(?:core|project)\.md|[a-z]+\/CLAUDE\.md)(?::raw)?$/;
+// The gate's block reason: `kit: before editing FILE, read these standards in full and ... then retry this edit: PATH_1, PATH_2. kit asks once ...`
+const BLOCK_REASON = /^kit: before editing .+?then retry this edit: (.+?)\. kit asks once/;
+// The pre-upgrade block reason: `kit: before editing FILE, read the Go standards in full at ROOT/code-standards/go/CLAUDE.md and follow them ...`
+const LEGACY_BLOCK_REASON = /read the .+? standards in full at (.+)\/code-standards\/([a-z]+)\/CLAUDE\.md and follow /;
+
+/** The unit a standards file path names, or undefined when the path is not a standards file. */
+function unitOfPath(path: string): string | undefined {
+	const legacy = LEGACY_STANDARDS_PATH.exec(path);
+	if (legacy) return legacy[1];
+	const m = STANDARDS_PATH.exec(path);
+	if (!m) return undefined;
+	if (!m[1]) return "scope";
+	return m[2] === "project" ? `${m[1]}:project` : m[1];
+}
+
+function unitLabel(unit: string): string {
+	const [lang, facet] = unit.split(":");
+	const label = STANDARDS_LANGS.find(l => l.id === lang)?.label ?? lang;
+	return facet ? `${label} (${facet})` : label;
+}
+
 const TAILWIND_CONFIGS = ["tailwind.config.js", "tailwind.config.cjs", "tailwind.config.mjs", "tailwind.config.ts"];
 
 const tailwindDirs = new Map<string, boolean>();
@@ -233,11 +332,20 @@ function tailwindProject(dir: string): boolean {
 	}
 }
 
-function languageOf(file: string): string | undefined {
+/** The unit a source or config file belongs to: `<lang>` for source, `<lang>:project` for build and tool config. */
+function languageOf(file: string): { lang: string; project: boolean } | undefined {
 	const name = basename(file);
 	for (const lang of STANDARDS_LANGS) {
-		const matches = lang.names.includes(name) || lang.suffixes.some(s => name.endsWith(s));
-		if (matches && (!lang.tailwind || tailwindProject(dirname(file)))) return lang.id;
+		const project = lang.projectNames.includes(name) || lang.projectSuffixes.some(s => name.endsWith(s));
+		const source =
+			lang.names.includes(name) ||
+			lang.suffixes.some(s => name.endsWith(s)) ||
+			(lang.sharedSuffixes?.some(s => name.endsWith(s)) ?? false);
+		if (!project && !source) continue;
+		if (lang.tailwind && !tailwindProject(dirname(file))) continue;
+		const shared = project || !(lang.names.includes(name) || lang.suffixes.some(s => name.endsWith(s)));
+		if (lang.cppRoot && shared && !cppProject(dirname(file))) continue;
+		return { lang: lang.id, project };
 	}
 	return undefined;
 }
@@ -284,22 +392,31 @@ function scanStandards(line: string, calls: Map<string, StdCall>, events: StdEve
 			const where = isText(source) && !source.includes("://") ? source : call.path;
 			events.push({
 				kind: "read",
-				lang: call.lang!,
+				unit: call.unit!,
 				at,
 				root: isText(where) && isAbsolute(where) ? where.replace(STANDARDS_TAIL, "") : undefined,
 			});
 		} else if (msg.isError) {
-			const reason = BLOCK_REASON.exec(msg.content?.[0]?.text ?? "");
-			if (reason) events.push({ kind: "block", lang: reason[2], at, root: reason[1] });
+			const text: string = msg.content?.[0]?.text ?? "";
+			const reason = BLOCK_REASON.exec(text);
+			for (const path of reason?.[1].split(", ") ?? []) {
+				const unit = unitOfPath(path);
+				if (unit) events.push({ kind: "block", unit, at, root: path.replace(STANDARDS_TAIL, "") });
+			}
+			const legacy = reason ? undefined : LEGACY_BLOCK_REASON.exec(text);
+			if (legacy) events.push({ kind: "block", unit: legacy[2], at, root: legacy[1] });
 		} else {
 			for (const file of editedFiles(call, msg.details, cwd)) {
-				const lang = languageOf(file);
-				if (lang) events.push({ kind: "edit", lang, at });
+				const hit = languageOf(file);
+				if (!hit) continue;
+				// A project file needs the same units as source, plus the project unit.
+				const units = ["scope", hit.lang, ...(hit.project ? [`${hit.lang}:project`] : [])];
+				for (const unit of units) events.push({ kind: "edit", unit, at });
 			}
 		}
 		return;
 	}
-	if (!line.includes('"type":"toolCall"') || !(line.includes("CLAUDE.md") || EDIT_CALL.test(line))) return;
+	if (!line.includes('"type":"toolCall"') || !(line.includes("code-standards/") || EDIT_CALL.test(line))) return;
 	const msg = JSON.parse(line).message;
 	if (msg?.role !== "assistant") return;
 	for (const part of msg.content ?? []) {
@@ -312,8 +429,8 @@ function scanStandards(line: string, calls: Map<string, StdCall>, events: StdEve
 				paths: Array.isArray(args.paths) ? args.paths.filter(isText) : [],
 			});
 		} else if (part.name === "read" && isText(args.path) && !args.path.includes("://")) {
-			const lang = STANDARDS_PATH.exec(args.path)?.[1];
-			if (lang) calls.set(part.id, { kind: "read", path: args.path, paths: [], lang });
+			const unit = unitOfPath(args.path);
+			if (unit) calls.set(part.id, { kind: "read", path: args.path, paths: [], unit });
 		}
 	}
 }
@@ -330,9 +447,9 @@ export function scanStandardsFile(text: string, cwd?: string): StdEvent[] {
 	return events;
 }
 
-/** What one agent did in one language. Edited = readBefore + readLate + (edited with no read at all). */
+/** What one agent did with one unit. Edited = readBefore + readLate + (edited with no read at all). */
 export interface StdOutcome {
-	lang: string;
+	unit: string;
 	edited: boolean;
 	/** Read the standards before the first successful edit. */
 	readBefore: boolean;
@@ -349,14 +466,14 @@ export interface StdOutcome {
 export function standardsOutcomes(events: StdEvent[], start: number, end: number): StdOutcome[] {
 	const inRange = (e: StdEvent) => e.at >= start && e.at < end;
 	const outcomes: StdOutcome[] = [];
-	for (const [lang, evs] of Map.groupBy(events, e => e.lang)) {
+	for (const [unit, evs] of Map.groupBy(events, e => e.unit)) {
 		const firstEdit = evs.findIndex(e => e.kind === "edit" && inRange(e));
 		const firstBlock = evs.findIndex(e => e.kind === "block" && inRange(e));
 		if (firstEdit < 0 && firstBlock < 0) continue;
 		const reads = evs.flatMap((e, i) => (e.kind === "read" ? [i] : []));
 		const readBefore = firstEdit >= 0 && reads.some(i => i < firstEdit);
 		outcomes.push({
-			lang,
+			unit,
 			edited: firstEdit >= 0,
 			readBefore,
 			readLate: firstEdit >= 0 && !readBefore && reads.length > 0,
@@ -696,13 +813,12 @@ function standardsRow(label: string, pairs: StdPair[]): Row {
 
 function standards(pairs: StdPair[]): string {
 	const bySize = <T>([ka, a]: [string, T[]], [kb, b]: [string, T[]]) => b.length - a.length || ka.localeCompare(kb);
-	const label = (id: string) => STANDARDS_LANGS.find(l => l.id === id)?.label ?? id;
 	return renderBox(
 		["Group", "Pairs", "Edited", "Read first", "Read late", "Ignored block", "Never blocked", "Blocked", "Read after block", "Read first %"],
 		[
 			[standardsRow("All", pairs)],
 			[standardsRow("Top-level", pairs.filter(p => !p.isSub)), standardsRow("Subagent", pairs.filter(p => p.isSub))],
-			[...Map.groupBy(pairs, p => p.lang)].sort(bySize).map(([lang, ps]) => standardsRow(label(lang), ps)),
+			[...Map.groupBy(pairs, p => p.unit)].sort(bySize).map(([unit, ps]) => standardsRow(unitLabel(unit), ps)),
 			[...Map.groupBy(pairs, p => standardsSource(p.root))].sort(bySize).map(([source, ps]) => standardsRow(source, ps)),
 		],
 		[false, true, true, true, true, true, true, true, true, true],
@@ -794,7 +910,8 @@ export function renderReport(c: Collected): RenderedReport {
 			heading: "Standards",
 			table: standards(pairs),
 			legend:
-				"Pairs: one agent (a session or a subagent) and one language it edited or was blocked in. Edited = Read first + Read late + Ignored block + Never blocked. " +
+				"Pairs: one agent (a session or a subagent) and one standards unit it edited or was blocked in. Units: scope, a language (its core file), and a language's project facet. " +
+				"An edit counts against scope and the language, so one agent adds a pair for each unit it edited. Edited = Read first + Read late + Ignored block + Never blocked. " +
 				"Read first: read the standards before the first edit; Read late: only after it. " +
 				"Ignored block: the gate blocked, the agent edited anyway and never read. " +
 				"Never blocked: edited with no block and never read (no gate yet, the gate failed, or it did not fire in that agent). " +

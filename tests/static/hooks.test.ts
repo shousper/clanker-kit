@@ -5,7 +5,7 @@ import { HOOKS_DIR, KIT_CLAUDE_HOOKS_DIR } from "../utils/paths";
 
 // Source: Claude Code hook system — update these when Claude Code adds new events/tools
 // See: https://docs.anthropic.com/en/docs/claude-code/hooks
-const VALID_EVENTS = ["PreToolUse", "PostToolUse", "SessionStart", "Stop", "SubagentStop"];
+const VALID_EVENTS = ["PreToolUse", "PostToolUse", "SessionStart", "SessionEnd", "Stop", "SubagentStop"];
 const VALID_TOOL_MATCHERS = [
   "Write", "Edit", "MultiEdit", "Read", "Bash", "Glob", "Grep", "WebFetch", "WebSearch",
   "Task", "Skill", "NotebookEdit", "TodoWrite",
@@ -114,6 +114,9 @@ describe("hooks.json", () => {
     expect(matchers("PreToolUse", "standards-check.sh").sort()).toEqual(["Edit", "MultiEdit", "Write"]);
     expect(matchers("PostToolUse", "standards-seen.sh")).toEqual(["Read"]);
     expect(matchers("SessionStart", "standards-reset.sh").sort()).toEqual(["clear", "compact"]);
+    // State cleanup prunes at every session start and sees every SessionEnd (the script decides on reason).
+    expect(matchers("SessionStart", "state-cleanup.sh").sort()).toEqual(["clear", "compact", "resume", "startup"]);
+    expect(cmds("SessionEnd").some((c: string) => c.endsWith("/state-cleanup.sh"))).toBe(true);
     const all = Object.values(hooksConfig.hooks).flat().flatMap((x: any) => x.hooks.map((h: any) => h.command));
     for (const dead of ["gofmt.sh","rustfmt.sh","eslint.sh","typescript.sh","clippy.sh","cargo-check.sh","hcl-record.sh","hcl-fmt.sh"]) {
       expect(all.some((c: string) => c.endsWith("/" + dead))).toBe(false);

@@ -1,0 +1,78 @@
+[tools]
+bun = "1.3.14"
+# Real jq: the hooks parse JSON with it, and some PATHs ship jaq under the same name.
+jq = "1.8.2"
+shellcheck = "0.11.0"
+vale = "3.20.0"
+ruff = "0.16.8"
+# The aqua backend installs the release binary, so the repo needs no Node.
+claude = "2.1.294"
+"github:can1357/oh-my-pi" = "18.8.6"
+
+[tasks.deps]
+description = "Install JavaScript dependencies from the lockfile"
+run = "bun install --frozen-lockfile"
+
+[tasks.test]
+description = "Run the static, stories, fixtures and utils test suites"
+depends = ["deps"]
+run = "bun test tests/static tests/stories tests/fixtures tests/utils"
+
+[tasks."test:all"]
+description = "Run every test, including the live evals when RUN_EVALS=1"
+depends = ["deps"]
+run = "bun test"
+
+[tasks."test:evals:smoke"]
+description = "Run the smoke-tier activation evals (needs harness credentials)"
+depends = ["deps"]
+env = { RUN_EVALS = "1", EVAL_TIER = "smoke" }
+run = "bun test tests/evals/activation.test.ts --timeout 120000"
+
+[tasks."test:evals"]
+description = "Run the full eval suite (needs harness credentials)"
+depends = ["deps"]
+env = { RUN_EVALS = "1", EVAL_TIER = "full" }
+run = "bun test tests/evals --concurrent --max-concurrency 4 --timeout 120000"
+
+[tasks."test:evals:parity"]
+description = "Run the activation evals against omp only (needs omp credentials)"
+depends = ["deps"]
+env = { RUN_EVALS = "1", EVAL_TIER = "parity", HARNESSES = "omp" }
+run = "bun test tests/evals/activation.test.ts --concurrent --max-concurrency 4 --timeout 120000"
+
+[tasks."test:evals:standards"]
+description = "Run the code-standards evals; set HARNESSES to limit harnesses and STANDARDS_TRACE=1 to print every trial's tool trace, passing trials included (needs harness credentials)"
+depends = ["deps"]
+env = { RUN_EVALS = "1" }
+run = "HARNESSES=${HARNESSES:-claude,omp} bun test tests/evals/code-standards.test.ts --concurrent --max-concurrency 4 --timeout 3600000"
+
+[tasks."test:evals:style"]
+description = "Run the writing-style evals; set HARNESSES to limit harnesses (needs harness credentials)"
+depends = ["deps"]
+env = { RUN_EVALS = "1" }
+run = "HARNESSES=${HARNESSES:-claude,omp} bun test tests/evals/style.test.ts --timeout 3600000"
+
+[tasks."validate:claude"]
+description = "Validate the Claude marketplace and every Claude plugin with the Claude Code CLI"
+# Every Claude plugin symlinks shared/ content into its tree. The validator
+# does not follow symlinks and emits a warning per symlinked component;
+# --strict would promote those warnings to hard failures even though the
+# validator's own message confirms a real session does follow the link.
+# Do not add --strict here without first resolving the symlinks.
+#
+# Plugins are discovered by manifest so a rename (plugins/stories became
+# plugins/stories-claude) cannot leave a stale path here. The *-omp plugins
+# have no .claude-plugin manifest; the validate:omp file task checks them
+# (mise-tasks/validate/omp).
+run = """
+set -e
+claude plugin validate .claude-plugin/marketplace.json
+for manifest in plugins/*/.claude-plugin/plugin.json; do
+  claude plugin validate "${manifest%/.claude-plugin/plugin.json}"
+done
+"""
+
+[tasks.validate]
+description = "Run every validate:* task"
+depends = ["validate:*"]

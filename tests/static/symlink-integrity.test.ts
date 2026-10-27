@@ -97,7 +97,7 @@ describe("symlink integrity", () => {
     it("plugins/kit-claude/hooks contains hooks.json and every protocol wrapper as real, executable files", () => {
       const wrappers = [
         "session-start.sh", "record.sh", "format-on-stop.sh", "hcl-detect.sh",
-        "standards-check.sh", "standards-seen.sh", "standards-reset.sh",
+        "standards-check.sh", "standards-seen.sh", "standards-reset.sh", "state-cleanup.sh",
       ];
       for (const name of ["hooks.json", ...wrappers]) {
         const full = resolve(KIT_CLAUDE_HOOKS_DIR, name);

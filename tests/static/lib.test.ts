@@ -19,10 +19,10 @@ describe("lib.sh", () => {
   });
 
   it("kit_is_handled accepts source files and rejects others", async () => {
-    for (const p of ["/x/a.go", "/x/a.rs", "/x/Cargo.toml", "/x/a.ts", "/x/a.tf", "/x/a.tofu", "/x/a.tfvars"]) {
+    for (const p of ["/x/a.go", "/x/a.rs", "/x/Cargo.toml", "/x/a.ts", "/x/a.tf", "/x/a.tofu", "/x/a.tfvars", "/x/a.py", "/x/a.pyi", "/x/a.cpp", "/x/a.hpp", "/x/a.h"]) {
       expect((await sh(`kit_is_handled "${p}" && echo Y || echo N`)).out.trim()).toBe("Y");
     }
-    for (const p of ["/x/readme.md", "/x/a.py", "/x/other.toml"]) {
+    for (const p of ["/x/readme.md", "/x/other.toml"]) {
       expect((await sh(`kit_is_handled "${p}" && echo Y || echo N`)).out.trim()).toBe("N");
     }
   });

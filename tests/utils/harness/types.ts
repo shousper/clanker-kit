@@ -23,6 +23,10 @@ export interface RunOptions {
   dangerouslySkipPermissions?: boolean;
   /** Provider-qualified on omp (see harness/omp.ts); an alias such as `sonnet` on claude. */
   model?: string;
+  /** Load only the extensions in `pluginDirs`, not the ones the host harness has installed.
+   *  On omp this adds `--no-extensions`; claude runs already use a throwaway config dir with
+   *  no installed plugins, so it ignores this. */
+  isolateExtensions?: boolean;
 }
 
 export interface Harness {

@@ -2,19 +2,20 @@ import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtemp, mkdir, writeFile, symlink, rm, realpath } from "fs/promises";
 import { existsSync } from "fs";
 import { tmpdir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { runNeutralScript } from "../utils/hook-workspace";
 import { HOOKS_DIR, KIT_CLAUDE_HOOKS_DIR } from "../utils/paths";
 
 const LIB = resolve(HOOKS_DIR, "lib.sh");
 
 let base: string;     // scratch tree holding everything below
-let root: string;     // fake plugin root: code-standards/{go,rust,hcl,tailwindcss,python,cpp}/CLAUDE.md
+let root: string;     // fake plugin root: code-standards/scope.md, <lang>/core.md, {rust,python,cpp}/project.md
 let alias: string;    // symlink to root
 let work: string;     // project dir with an .opentofu-version pin and no Tailwind signal
 let stateDir: string; // KIT_STATE_DIR; its parent also receives hcl-tool.json
 
 const LANGS = ["go", "rust", "hcl", "tailwindcss", "python", "cpp"] as const;
+const PROJECT_LANGS = ["rust", "python", "cpp"] as const;
 const LABELS: Record<string, string> = {
   go: "Go",
   rust: "Rust",
@@ -27,9 +28,14 @@ const LABELS: Record<string, string> = {
 beforeAll(async () => {
   base = await realpath(await mkdtemp(join(tmpdir(), "standards-gate-")));
   root = join(base, "plugin");
+  await mkdir(join(root, "code-standards"), { recursive: true });
+  await writeFile(join(root, "code-standards", "scope.md"), "# scope\n");
   for (const lang of LANGS) {
     await mkdir(join(root, "code-standards", lang), { recursive: true });
-    await writeFile(join(root, "code-standards", lang, "CLAUDE.md"), `# ${lang} standards\n`);
+    await writeFile(join(root, "code-standards", lang, "core.md"), `# ${lang} standards\n`);
+  }
+  for (const lang of PROJECT_LANGS) {
+    await writeFile(join(root, "code-standards", lang, "project.md"), `# ${lang} project\n`);
   }
   alias = join(base, "alias");
   await symlink(root, alias);
@@ -45,14 +51,18 @@ afterAll(async () => {
 
 let counter = 0;
 const freshKey = () => `key-${++counter}`;
-const std = (lang: string, pluginRoot = root) => join(pluginRoot, "code-standards", lang, "CLAUDE.md");
+const unitPath = (unit: string, pluginRoot = root) => {
+  if (unit === "scope") return join(pluginRoot, "code-standards", "scope.md");
+  if (unit.endsWith(":project")) return join(pluginRoot, "code-standards", unit.slice(0, -":project".length), "project.md");
+  return join(pluginRoot, "code-standards", unit, "core.md");
+};
 
-function reasonFor(file: string, lang: string, pluginRoot = root, suffix = ""): string {
+function reasonFor(file: string, lang: string, units: string[], pluginRoot = root, suffix = ""): string {
   const label = LABELS[lang];
+  const paths = units.map((u) => unitPath(u, pluginRoot)).join(", ");
   return (
-    `kit: before editing ${file}, read the ${label} standards in full at ${std(lang, pluginRoot)} ` +
-    `and follow them for all ${label} code in this session, then retry this edit. ` +
-    `kit asks once per language per session.${suffix}\n`
+    `kit: before editing ${file}, read these standards in full and follow them for all ${label} code in this session, ` +
+    `then retry this edit: ${paths}. kit asks once per standards file per session.${suffix}\n`
   );
 }
 
@@ -64,16 +74,41 @@ function gate(sub: "check" | "seen" | "reset", file: string | undefined, key: st
   });
 }
 
-async function expectBlocked(file: string, lang: string, key: string, env: Record<string, string> = {}, suffix = " This project uses tofu.") {
+/** Expects a block naming exactly `units` (in order). Defaults to scope plus the language core. */
+async function expectBlocked(file: string, lang: string, key: string, env: Record<string, string> = {}, opts: { units?: string[]; suffix?: string } = {}) {
   const r = await gate("check", file, key, env);
   expect(r.exitCode).toBe(2);
-  expect(r.stdout).toBe(reasonFor(file, lang, env.KIT_PLUGIN_ROOT ?? root, lang === "hcl" ? suffix : ""));
+  const units = opts.units ?? ["scope", lang];
+  expect(r.stdout).toBe(reasonFor(file, lang, units, env.KIT_PLUGIN_ROOT ?? root, lang === "hcl" ? (opts.suffix ?? " This project uses tofu.") : ""));
 }
 
 async function expectAllowed(file: string, key: string, env: Record<string, string> = {}) {
   const r = await gate("check", file, key, env);
   expect(r.exitCode).toBe(0);
   expect(r.stdout).toBe("");
+}
+
+/** Records reads of the given units for `key`. */
+async function readUnits(key: string, units: string[], env: Record<string, string> = {}) {
+  for (const unit of units) await gate("seen", unitPath(unit, env.KIT_PLUGIN_ROOT ?? root), key, env);
+}
+
+function stateOf(key: string): Promise<string> {
+  return Bun.file(join(stateDir, `standards-${key}.txt`)).text().catch(() => "");
+}
+
+/** Builds a plugin root under `base` with the full layout, minus `omit` files, plus `extra` files (paths relative to code-standards). */
+async function makePlugin(name: string, opts: { omit?: string[]; extra?: string[] }): Promise<string> {
+  const dir = join(base, name);
+  const files = ["scope.md"];
+  for (const lang of LANGS) files.push(`${lang}/core.md`);
+  for (const lang of PROJECT_LANGS) files.push(`${lang}/project.md`);
+  for (const rel of [...files, ...(opts.extra ?? [])]) {
+    if ((opts.omit ?? []).includes(rel)) continue;
+    await mkdir(dirname(join(dir, "code-standards", rel)), { recursive: true });
+    await writeFile(join(dir, "code-standards", rel), `# ${rel}\n`);
+  }
+  return dir;
 }
 
 describe("kit_physical_path", () => {
@@ -133,38 +168,41 @@ describe("kit_physical_path", () => {
 });
 
 describe("standards-gate.sh check", () => {
-  it("blocks the first Go edit with the exact reason and allows the retry", async () => {
+  it("blocks the first Go edit naming scope then the Go core, and allows the retry", async () => {
     const key = freshKey();
     const file = join(work, "main.go");
     const r = await gate("check", file, key);
     expect(r.exitCode).toBe(2);
     expect(r.stdout).toBe(
-      `kit: before editing ${file}, read the Go standards in full at ${root}/code-standards/go/CLAUDE.md ` +
-        `and follow them for all Go code in this session, then retry this edit. kit asks once per language per session.\n`,
+      `kit: before editing ${file}, read these standards in full and follow them for all Go code in this session, ` +
+        `then retry this edit: ${root}/code-standards/scope.md, ${root}/code-standards/go/core.md. ` +
+        `kit asks once per standards file per session.\n`,
     );
     await expectAllowed(file, key);
-    await expectAllowed(join(work, "other.go"), key); // state is per language, not per file
+    await expectAllowed(join(work, "other.go"), key); // state is per unit, not per file
   });
 
   it("gates each language row once, independently", async () => {
-    const rows: Array<[string, string]> = [
-      ["main.go", "go"], ["go.mod", "go"], ["go.sum", "go"],
-      ["lib.rs", "rust"], ["Cargo.toml", "rust"],
-      ["main.tf", "hcl"], ["stack.tofu", "hcl"], ["stack.tofu.json", "hcl"], ["prod.tfvars", "hcl"],
+    const rows: Array<[string, string, string[]]> = [
+      ["main.go", "go", ["scope", "go"]], ["go.mod", "go", ["scope", "go"]], ["go.sum", "go", ["scope", "go"]],
+      ["lib.rs", "rust", ["scope", "rust"]], ["Cargo.toml", "rust", ["scope", "rust", "rust:project"]],
+      ["main.tf", "hcl", ["scope", "hcl"]], ["stack.tofu", "hcl", ["scope", "hcl"]],
+      ["stack.tofu.json", "hcl", ["scope", "hcl"]], ["prod.tfvars", "hcl", ["scope", "hcl"]],
     ];
-    for (const [name, lang] of rows) {
+    for (const [name, lang, units] of rows) {
       const key = freshKey();
-      await expectBlocked(join(work, name), lang, key);
+      await expectBlocked(join(work, name), lang, key, {}, { units });
       await expectAllowed(join(work, name), key);
     }
     const key = freshKey();
     await expectBlocked(join(work, "main.go"), "go", key);
-    await expectBlocked(join(work, "lib.rs"), "rust", key); // a prompted Go does not cover Rust
+    // A prompted Go does not cover Rust, but scope was already asked for.
+    await expectBlocked(join(work, "lib.rs"), "rust", key, {}, { units: ["rust"] });
   });
 
   it("passes files outside the language table", async () => {
     const key = freshKey();
-    for (const name of ["README.md", "main.c", "requirements.txt", "notes.txt", "data.json", "main.ts", "Makefile", "gofile", "go.work", "util.h", "CMakeLists.txt"]) {
+    for (const name of ["README.md", "main.c", "requirements.txt", "notes.txt", "data.json", "main.ts", "Makefile", "gofile", "go.work", "util.h", "CMakeLists.txt", ".clang-tidy", ".clang-format"]) {
       await expectAllowed(join(work, name), key);
     }
     await expectBlocked(join(work, "main.go"), "go", key); // the unknown files recorded nothing
@@ -179,22 +217,25 @@ describe("standards-gate.sh check", () => {
     await expectBlocked(file, "rust", b);
   });
 
-  it("does not gate a language whose standards file is missing", async () => {
-    const bare = join(base, "bare-plugin");
-    await mkdir(join(bare, "code-standards", "rust"), { recursive: true });
-    await writeFile(join(bare, "code-standards", "rust", "CLAUDE.md"), "# rust\n");
+  it("does not gate a language whose core standards file is missing, even when scope exists", async () => {
+    const bare = await makePlugin("bare-plugin", { omit: ["go/core.md"] });
     const key = freshKey();
     await expectAllowed(join(work, "main.go"), key, { KIT_PLUGIN_ROOT: bare });
     await expectBlocked(join(work, "lib.rs"), "rust", key, { KIT_PLUGIN_ROOT: bare });
     await expectAllowed(join(work, "main.go"), freshKey(), { KIT_PLUGIN_ROOT: join(base, "no-such-root") });
   });
 
+  it("skips a missing scope file and still gates the language core", async () => {
+    const noScope = await makePlugin("no-scope-plugin", { omit: ["scope.md"] });
+    await expectBlocked(join(work, "main.go"), "go", freshKey(), { KIT_PLUGIN_ROOT: noScope }, { units: ["go"] });
+  });
+
   it("prints the standards path in the form of KIT_PLUGIN_ROOT, not its realpath", async () => {
     const file = join(work, "main.go");
     const r = await gate("check", file, freshKey(), { KIT_PLUGIN_ROOT: alias });
     expect(r.exitCode).toBe(2);
-    expect(r.stdout).toBe(reasonFor(file, "go", alias));
-    expect(r.stdout).toContain(`${alias}/code-standards/go/CLAUDE.md`);
+    expect(r.stdout).toBe(reasonFor(file, "go", ["scope", "go"], alias));
+    expect(r.stdout).toContain(`${alias}/code-standards/go/core.md`);
   });
 
   it("allows the edit when it cannot run or remember its state", async () => {
@@ -231,8 +272,8 @@ describe("standards-gate.sh check", () => {
     await writeFile(join(tf, ".terraform-version"), "1.9.0\n");
 
     const file = join(nested, "main.tf");
-    await expectBlocked(file, "hcl", freshKey(), {}, " This project uses terraform.");
-    await expectBlocked(join(work, "main.tf"), "hcl", freshKey(), {}, " This project uses tofu.");
+    await expectBlocked(file, "hcl", freshKey(), {}, { suffix: " This project uses terraform." });
+    await expectBlocked(join(work, "main.tf"), "hcl", freshKey(), {}, { suffix: " This project uses tofu." });
   });
 
   it("works when invoked through the kit-claude hooks/shared symlink", async () => {
@@ -244,69 +285,200 @@ describe("standards-gate.sh check", () => {
       env: { KIT_PLUGIN_ROOT: root, KIT_STATE_DIR: stateDir, KIT_SCRATCH_KEY: freshKey() },
     });
     expect(r.exitCode).toBe(2);
-    expect(r.stdout).toBe(reasonFor(file, "hcl", root, " This project uses tofu."));
+    expect(r.stdout).toBe(reasonFor(file, "hcl", ["scope", "hcl"], root, " This project uses tofu."));
+  });
+});
+
+describe("standards-gate.sh check: units", () => {
+  it("names only the language core once scope is read", async () => {
+    const key = freshKey();
+    await readUnits(key, ["scope", "go"]);
+    await expectAllowed(join(work, "main.go"), key);
+    await expectBlocked(join(work, "lib.rs"), "rust", key, {}, { units: ["rust"] });
+  });
+
+  it("asks for scope, core and project on Cargo.toml, then allows every Rust config file", async () => {
+    const key = freshKey();
+    await expectBlocked(join(work, "Cargo.toml"), "rust", key, {}, { units: ["scope", "rust", "rust:project"] });
+
+    const read = freshKey();
+    await readUnits(read, ["scope", "rust", "rust:project"]);
+    for (const name of ["Cargo.toml", "clippy.toml", "rust-toolchain.toml", "lib.rs"]) {
+      await expectAllowed(join(work, name), read);
+    }
+  });
+
+  it("names only the project facet when scope and the Rust core are loaded", async () => {
+    const key = freshKey();
+    await readUnits(key, ["scope", "rust"]);
+    await expectBlocked(join(work, "Cargo.toml"), "rust", key, {}, { units: ["rust:project"] });
+    await expectAllowed(join(work, "clippy.toml"), key);
+  });
+
+  it("treats clippy.toml and rust-toolchain.toml as project config on a first edit", async () => {
+    for (const name of ["clippy.toml", "rust-toolchain.toml"]) {
+      await expectBlocked(join(work, name), "rust", freshKey(), {}, { units: ["scope", "rust", "rust:project"] });
+    }
+  });
+
+  it("asks for the project facet on pyproject.toml but not on Python sources", async () => {
+    await expectBlocked(join(work, "pyproject.toml"), "python", freshKey(), {}, { units: ["scope", "python", "python:project"] });
+    await expectBlocked(join(work, "app.py"), "python", freshKey(), {}, { units: ["scope", "python"] });
+  });
+
+  it("includes the C++ project facet on build and tool config in a C++ repository", async () => {
+    const repo = join(base, "units-cpp-repo");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    await writeFile(join(repo, "engine.cpp"), "\n");
+    for (const name of ["CMakeLists.txt", "foo.cmake", "CMakePresets.json", ".clang-tidy", ".clang-format"]) {
+      await expectBlocked(join(repo, name), "cpp", freshKey(), {}, { units: ["scope", "cpp", "cpp:project"] });
+    }
+    await expectBlocked(join(repo, "engine.h"), "cpp", freshKey(), {}, { units: ["scope", "cpp"] });
+  });
+
+  it("passes the shared C and C++ files, including headers, in a pure-C repository", async () => {
+    const repo = join(base, "units-c-repo");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    await writeFile(join(repo, "main.c"), "\n");
+    const key = freshKey();
+    for (const name of ["CMakeLists.txt", "foo.cmake", "CMakePresets.json", ".clang-tidy", ".clang-format", "util.h"]) {
+      await expectAllowed(join(repo, name), key);
+    }
+  });
+
+  it("fails open for a project facet whose file does not exist", async () => {
+    const noFacet = await makePlugin("no-rust-project-plugin", { omit: ["rust/project.md"] });
+    await expectBlocked(join(work, "Cargo.toml"), "rust", freshKey(), { KIT_PLUGIN_ROOT: noFacet }, { units: ["scope", "rust"] });
+  });
+
+  it("finds a new facet file without code changes", async () => {
+    const extra = await makePlugin("go-project-plugin", { extra: ["go/project.md"] });
+    const key = freshKey();
+    await gate("seen", unitPath("go:project", extra), key, { KIT_PLUGIN_ROOT: extra });
+    expect(await stateOf(key)).toContain("go:project loaded");
+  });
+
+  it("does not mark a unit for the core of another plugin root or an unrelated core.md", async () => {
+    const other = await makePlugin("other-plugin", {});
+    await mkdir(join(work, "pkg"), { recursive: true });
+    await writeFile(join(work, "pkg", "core.md"), "# unrelated\n");
+    const key = freshKey();
+    await gate("seen", unitPath("go", other), key);
+    await gate("seen", unitPath("scope", other), key);
+    await gate("seen", join(work, "pkg", "core.md"), key);
+    expect(await stateOf(key)).toBe("");
+    await expectBlocked(join(work, "main.go"), "go", key);
+  });
+});
+
+describe("standards-gate.sh check: C++ repository scan cache", () => {
+  it("scans a repository root once per agent", async () => {
+    const repo = join(base, "cache-c-repo");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    await writeFile(join(repo, "main.c"), "\n");
+    const header = join(repo, "util.h");
+
+    const key = freshKey();
+    await expectAllowed(header, key);
+    expect(await stateOf(key)).toContain(`cpp-root no ${repo}\n`);
+
+    await writeFile(join(repo, "engine.cpp"), "\n");
+    await expectAllowed(header, key); // cached answer for this agent
+
+    const other = freshKey();
+    await expectBlocked(header, "cpp", other); // a different agent scans again
+  });
+
+  it("keeps the cache lines apart from unit state and from roots with spaces", async () => {
+    const repo = join(base, "cache spaced repo");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    await writeFile(join(repo, "engine.cpp"), "\n");
+    const key = freshKey();
+    await expectBlocked(join(repo, "util.h"), "cpp", key);
+    expect(await stateOf(key)).toContain(`cpp-root yes ${repo}\n`);
+    await readUnits(key, ["scope", "cpp"]);
+    await expectAllowed(join(repo, "util.h"), key);
+  });
+
+  it("caches a root containing a backslash once", async () => {
+    const repo = join(base, "repos", "back\\tslash");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    await writeFile(join(repo, "util.h"), "\n");
+    const key = freshKey();
+    for (let i = 0; i < 3; i++) await expectAllowed(join(repo, "util.h"), key);
+    const lines = (await stateOf(key)).split("\n").filter((l) => l.startsWith("cpp-root "));
+    expect(lines).toEqual([`cpp-root no ${repo}`]);
   });
 });
 
 describe("standards-gate.sh seen", () => {
   const goFile = () => join(work, "main.go");
 
-  it("counts a read of the standards file: the next edit passes without a block", async () => {
+  it("counts a read of the standards files: the next edit passes without a block", async () => {
     const key = freshKey();
-    expect((await gate("seen", std("go"), key)).exitCode).toBe(0);
+    expect((await gate("seen", unitPath("scope"), key)).exitCode).toBe(0);
+    expect((await gate("seen", unitPath("go"), key)).exitCode).toBe(0);
     await expectAllowed(goFile(), key);
-    await expectBlocked(join(work, "lib.rs"), "rust", key); // only Go was read
+    await expectBlocked(join(work, "lib.rs"), "rust", key, {}, { units: ["rust"] }); // only scope and Go were read
   });
 
   it("counts a read through a symlinked plugin root, in either direction", async () => {
     const viaAlias = freshKey();
-    await gate("seen", std("go", alias), viaAlias);                       // read via alias, plugin root is the real path
+    await gate("seen", unitPath("scope", alias), viaAlias);                // read via alias, plugin root is the real path
+    await gate("seen", unitPath("go", alias), viaAlias);
     await expectAllowed(goFile(), viaAlias);
 
     const viaReal = freshKey();
-    await gate("seen", std("go"), viaReal, { KIT_PLUGIN_ROOT: alias });   // read via real path, plugin root is the alias
-    await expectAllowed(goFile(), viaReal, { KIT_PLUGIN_ROOT: alias });
+    const env = { KIT_PLUGIN_ROOT: alias };
+    await gate("seen", unitPath("scope"), viaReal, env);                   // read via real path, plugin root is the alias
+    await gate("seen", unitPath("go"), viaReal, env);
+    await expectAllowed(goFile(), viaReal, env);
   });
 
-  it("counts a read through a symlinked directory and through a symlinked CLAUDE.md", async () => {
+  it("counts a read through a symlinked directory and through a symlinked core.md", async () => {
     await symlink(join(root, "code-standards", "rust"), join(base, "rust-dir-link"));
     await mkdir(join(base, "file-link"));
-    await symlink(std("hcl"), join(base, "file-link", "CLAUDE.md"));
+    await symlink(unitPath("hcl"), join(base, "file-link", "core.md"));
 
     const viaDir = freshKey();
-    await gate("seen", join(base, "rust-dir-link", "CLAUDE.md"), viaDir);
+    await gate("seen", unitPath("scope"), viaDir);
+    await gate("seen", join(base, "rust-dir-link", "core.md"), viaDir);
     await expectAllowed(join(work, "lib.rs"), viaDir);
 
     const viaFile = freshKey();
-    await gate("seen", join(base, "file-link", "CLAUDE.md"), viaFile);
+    await gate("seen", unitPath("scope"), viaFile);
+    await gate("seen", join(base, "file-link", "core.md"), viaFile);
     await expectAllowed(join(work, "main.tf"), viaFile);
   });
 
-  it("does not count another CLAUDE.md, or the standards of a different language", async () => {
+  it("does not count another CLAUDE.md or core.md, or the standards of a different language", async () => {
     await writeFile(join(work, "CLAUDE.md"), "# project notes\n");
 
     const key = freshKey();
+    await gate("seen", unitPath("scope"), key);
     await gate("seen", join(work, "CLAUDE.md"), key);
-    await gate("seen", join(root, "code-standards", "python", "CLAUDE.md"), key);
-    await gate("seen", std("rust"), key);
-    await expectBlocked(goFile(), "go", key);
+    await gate("seen", unitPath("python"), key);
+    await gate("seen", unitPath("rust"), key);
+    await expectBlocked(goFile(), "go", key, {}, { units: ["go"] });
   });
 
   it("does not count a ranged read, but counts a :raw read", async () => {
     const ranged = freshKey();
     for (const suffix of [":1-50", ":50", ":raw:1-50"]) {
-      expect((await gate("seen", `${std("go")}${suffix}`, ranged)).exitCode).toBe(0);
+      expect((await gate("seen", `${unitPath("go")}${suffix}`, ranged)).exitCode).toBe(0);
+      expect((await gate("seen", `${unitPath("scope")}${suffix}`, ranged)).exitCode).toBe(0);
     }
     await expectBlocked(goFile(), "go", ranged);
 
     const raw = freshKey();
-    expect((await gate("seen", `${std("go")}:raw`, raw)).exitCode).toBe(0);
+    await gate("seen", `${unitPath("scope")}:raw`, raw);
+    expect((await gate("seen", `${unitPath("go")}:raw`, raw)).exitCode).toBe(0);
     await expectAllowed(goFile(), raw);
   });
 
   it("ignores paths that do not exist, and never fails", async () => {
     const key = freshKey();
-    for (const p of [join(base, "nope", "CLAUDE.md"), "CLAUDE.md", "", join(root, "code-standards")]) {
+    for (const p of [join(base, "nope", "core.md"), "core.md", "scope.md", "", join(root, "code-standards")]) {
       expect((await gate("seen", p, key)).exitCode).toBe(0);
     }
     expect((await gate("seen", undefined, key)).exitCode).toBe(0);
@@ -315,7 +487,7 @@ describe("standards-gate.sh seen", () => {
 
   it("loses the read when reset runs, so the next edit blocks again", async () => {
     const key = freshKey();
-    await gate("seen", std("go"), key);
+    await readUnits(key, ["scope", "go"]);
     await expectAllowed(goFile(), key);
     await gate("reset", undefined, key);
     await expectBlocked(goFile(), "go", key);
@@ -324,7 +496,7 @@ describe("standards-gate.sh seen", () => {
   it("keeps a read per agent key", async () => {
     const reader = freshKey();
     const other = freshKey();
-    await gate("seen", std("go"), reader);
+    await readUnits(reader, ["scope", "go"]);
     await expectAllowed(goFile(), reader);
     await expectBlocked(goFile(), "go", other);
   });
@@ -333,12 +505,17 @@ describe("standards-gate.sh seen", () => {
 describe("standards-gate.sh check: Python", () => {
   /** Python sources, stubs and the project file each block the first edit and name the Python standards. */
   it("gates .py, .pyi and pyproject.toml once per agent", async () => {
-    for (const name of ["app.py", "types.pyi", "pyproject.toml"]) {
+    const rows: Array<[string, string[]]> = [
+      ["app.py", ["scope", "python"]],
+      ["types.pyi", ["scope", "python"]],
+      ["pyproject.toml", ["scope", "python", "python:project"]],
+    ];
+    for (const [name, units] of rows) {
       const key = freshKey();
       const file = join(work, name);
       const blocked = await gate("check", file, key);
       expect(blocked.exitCode, `${name} must block the first Python edit`).toBe(2);
-      expect(blocked.stdout, `${name} must name the Python standards`).toBe(reasonFor(file, "python"));
+      expect(blocked.stdout, `${name} must name the Python standards`).toBe(reasonFor(file, "python", units));
       const retried = await gate("check", file, key);
       expect(retried.exitCode, `${name} must pass on the retry`).toBe(0);
     }
@@ -347,7 +524,7 @@ describe("standards-gate.sh check: Python", () => {
   /** A full read of the Python standards satisfies the gate, and an agent with no read is still blocked. */
   it("allows the first Python edit only after a full read of the Python standards", async () => {
     const reader = freshKey();
-    await gate("seen", std("python"), reader);
+    await readUnits(reader, ["scope", "python"]);
     const afterRead = await gate("check", join(work, "app.py"), reader);
     expect(afterRead.exitCode, "a read of the Python standards must satisfy the gate").toBe(0);
     const withoutRead = await gate("check", join(work, "app.py"), freshKey());
@@ -368,7 +545,7 @@ describe("standards-gate.sh check: C++", () => {
       const file = join(work, name);
       const blocked = await gate("check", file, key);
       expect(blocked.exitCode, `${name} must block the first C++ edit`).toBe(2);
-      expect(blocked.stdout, `${name} must name the C++ standards`).toBe(reasonFor(file, "cpp"));
+      expect(blocked.stdout, `${name} must name the C++ standards`).toBe(reasonFor(file, "cpp", ["scope", "cpp"]));
       const retried = await gate("check", file, key);
       expect(retried.exitCode, `${name} must pass on the retry`).toBe(0);
     }
@@ -377,7 +554,7 @@ describe("standards-gate.sh check: C++", () => {
   /** A full read of the C++ standards satisfies the gate, and an agent with no read is still blocked. */
   it("allows the first C++ edit only after a full read of the C++ standards", async () => {
     const reader = freshKey();
-    await gate("seen", std("cpp"), reader);
+    await readUnits(reader, ["scope", "cpp"]);
     const afterRead = await gate("check", join(work, "engine.cpp"), reader);
     expect(afterRead.exitCode, "a read of the C++ standards must satisfy the gate").toBe(0);
     const withoutRead = await gate("check", join(work, "engine.cpp"), freshKey());
@@ -385,6 +562,7 @@ describe("standards-gate.sh check: C++", () => {
   });
 
   const sharedNames = ["include/project_name/engine.h", "CMakeLists.txt", "cmake/warnings.cmake", "CMakePresets.json"];
+  const cppUnitsFor = (relative: string) => (relative.endsWith(".h") ? ["scope", "cpp"] : ["scope", "cpp", "cpp:project"]);
 
   /** In a repository that holds a C++ source, every shared C and C++ file blocks as C++. A .git file marks a worktree. */
   it("gates .h and CMake files as C++ in a repository with C++ sources", async () => {
@@ -396,7 +574,7 @@ describe("standards-gate.sh check: C++", () => {
       const file = join(repo, relative);
       const blocked = await gate("check", file, freshKey());
       expect(blocked.exitCode, `${relative} must block in a C++ repository`).toBe(2);
-      expect(blocked.stdout, `${relative} must name the C++ standards`).toBe(reasonFor(file, "cpp"));
+      expect(blocked.stdout, `${relative} must name the C++ standards`).toBe(reasonFor(file, "cpp", cppUnitsFor(relative)));
     }
   });
 
@@ -450,6 +628,22 @@ describe("standards-gate.sh check: C++", () => {
     expect(stopped.exitCode, "the search must not reach the C++ source above the ceiling").toBe(0);
     const climbed = await gate("check", header, freshKey());
     expect(climbed.exitCode, "below the default ceiling, the search must find the repository and its C++ source").toBe(2);
+  });
+
+  /** C++ state from another repository must not turn a pure C repository's build files into C++ units. */
+  it("passes a C repository's CMakeLists.txt after the agent has worked in a C++ repository", async () => {
+    const cRepo = join(base, "cproj");
+    const cppRepo = join(base, "cppproj");
+    await mkdir(join(cRepo, ".git"), { recursive: true });
+    await mkdir(join(cppRepo, ".git"), { recursive: true });
+    await mkdir(join(cppRepo, "src"), { recursive: true });
+    await writeFile(join(cRepo, "main.c"), "\n");
+    await writeFile(join(cppRepo, "src", "engine.cpp"), "\n");
+    const key = freshKey();
+    await expectAllowed(join(cRepo, "CMakeLists.txt"), key);
+    await expectBlocked(join(cppRepo, "src", "engine.cpp"), "cpp", key);
+    await readUnits(key, ["scope", "cpp"]);
+    await expectAllowed(join(cRepo, "CMakeLists.txt"), key);
   });
 });
 
@@ -516,12 +710,14 @@ describe("standards-gate.sh under /bin/bash", () => {
     const blocked = await runWithSystemBash(["check", goFile], { KIT_SCRATCH_KEY: key });
     expect(blocked.stderr).toBe("");
     expect(blocked.exitCode).toBe(2);
-    expect(blocked.stdout).toBe(reasonFor(goFile, "go"));
+    expect(blocked.stdout).toBe(reasonFor(goFile, "go", ["scope", "go"]));
     expect((await runWithSystemBash(["check", goFile], { KIT_SCRATCH_KEY: key })).exitCode).toBe(0);
 
     const readKey = freshKey();
-    const seen = await runWithSystemBash(["seen", std("rust", alias)], { KIT_SCRATCH_KEY: readKey });
-    expect(seen.stderr).toBe("");
+    for (const unit of ["scope", "rust"]) {
+      const seen = await runWithSystemBash(["seen", unitPath(unit, alias)], { KIT_SCRATCH_KEY: readKey });
+      expect(seen.stderr).toBe("");
+    }
     const afterRead = await runWithSystemBash(["check", join(work, "lib.rs")], { KIT_SCRATCH_KEY: readKey });
     expect({ code: afterRead.exitCode, out: afterRead.stdout }).toEqual({ code: 0, out: "" });
   });

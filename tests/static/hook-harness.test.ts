@@ -89,23 +89,6 @@ describe("hcl-detect.sh", () => {
     const second = await runHook("hcl-detect.sh", { tool_name:"", tool_input:{}, cwd: ws.dir, env });
     expect(second.stdout.trim()).toBe("");
   });
-
-  it("hcl-detect prunes scratch and standards-gate state older than a day and keeps fresh ones", async () => {
-    const cfg = await import("fs/promises").then(fs => import("os").then(os => fs.mkdtemp(join(os.tmpdir(),"kit-cfg-"))));
-    const { mkdir, writeFile, utimes, stat } = await import("fs/promises");
-    const stateDir = join(cfg, "kit/state");
-    await mkdir(stateDir, { recursive: true });
-    const stale = ["touched-dead.txt", "standards-dead.txt"].map((n) => join(stateDir, n));
-    const fresh = ["touched-live.txt", "standards-live.txt"].map((n) => join(stateDir, n));
-    for (const p of [...stale, ...fresh]) await writeFile(p, "/x/main.tf\n");
-    const twoDaysAgo = new Date(Date.now() - 2 * 86400_000);
-    for (const p of stale) await utimes(p, twoDaysAgo, twoDaysAgo);
-    // cwd need not be HCL; prune runs regardless before the early-exits.
-    const nonHcl = await import("fs/promises").then(fs => import("os").then(os => fs.mkdtemp(join(os.tmpdir(),"nohcl-"))));
-    await runHook("hcl-detect.sh", { tool_name:"", tool_input:{}, cwd: nonHcl, env: { CLAUDE_CONFIG_DIR: cfg } });
-    for (const p of stale) await expect(stat(p)).rejects.toThrow();   // pruned
-    for (const p of fresh) await expect(stat(p)).resolves.toBeDefined(); // kept
-  });
 });
 
 // --- session-context.sh (neutral: args/env in, plain text out, no JSON) ---

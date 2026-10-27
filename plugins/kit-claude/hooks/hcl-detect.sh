@@ -17,15 +17,6 @@ cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 
 hcl_tool="${script_dir}/shared/hcl-tool.sh"
 
-# Prune scratch and standards-gate state left by dead sessions/agents
-# (within-session scratch leftovers self-heal on the next Stop; a pruned gate
-# state only means one more block for a session idle over a day). Runs
-# regardless of cwd, before the early-exits.
-state_dir="$(kit_state_dir)"
-if [ -d "$state_dir" ]; then
-  find "$state_dir" \( -name 'touched-*.txt' -o -name 'standards-*.txt' \) -mtime +1 -delete 2>/dev/null || true
-fi
-
 # Already decided? stay silent.
 [ -n "$("$hcl_tool" get "$cwd")" ] && exit 0
 # Not an HCL project? stay silent.

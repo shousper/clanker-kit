@@ -32,6 +32,10 @@ export const omp: Harness = {
     // never injects the using-kit governance block. Evaluating with `--plugin-dir` would
     // measure a configuration we don't ship and under-report activation.
     for (const dir of options.pluginDirs ?? []) args.push("-e", dir);
+    // An installed kit-omp (for example one linked to another checkout) registers its own
+    // gate next to the `-e` copy, so an agent sees two gates with different standards
+    // files. `--no-extensions` stops discovery; explicit `-e` paths still load.
+    if (options.isolateExtensions) args.push("--no-extensions");
     // Skills come from the plugin OMP has installed, not from the `-e` directory. While the
     // linked install still points at a checkout that has the retired code-standards skill,
     // agents load it, chase its unreachable `../..` table, and time out before editing.
