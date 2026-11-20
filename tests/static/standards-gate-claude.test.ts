@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { runHook } from "../utils/hook-workspace";
+import { GATED_NAMES, UNGATED_NAMES } from "../utils/gated-names";
 import { KIT_CLAUDE_HOOKS_DIR } from "../utils/paths";
 
 // The Claude wrappers translate hook JSON into calls on the neutral gate. These tests drive
@@ -178,22 +179,12 @@ describe.each(MODES)("Claude standards gate wrappers (%s)", (_mode, useBinBash) 
     // in step with the gate's file table, so each pattern family needs a representative
     // the wrapper lets through to a gate that maps it to units.
     describe("wrapper file-name prefilter stays in sync with the gate", () => {
-      const GATED = [
-        "main.go", "go.mod", "go.sum",
-        "lib.rs", "Cargo.toml", "clippy.toml", "rust-toolchain.toml",
-        "main.tf", "main.tofu", "main.tofu.json", "vars.tfvars",
-        "app.py", "stubs.pyi", "pyproject.toml",
-        "a.cpp", "a.cc", "a.cxx", "a.hpp", "a.hh", "a.hxx", "a.ipp", "a.tpp", "a.inl", "a.h",
-        "CMakeLists.txt", "tools.cmake", "CMakePresets.json", ".clang-tidy", ".clang-format",
-        "app.css", "App.tsx", "App.jsx", "App.vue", "App.svelte", "App.astro", "index.html",
-      ];
-      const UNGATED = ["README.md", "foo.ts", "Makefile", "notes.txt"];
       const signals = async () => {
         await writeFile(join(f.proj, "tailwind.config.js"), "module.exports = {};\n");
         await writeFile(join(f.proj, "main.cpp"), "int main() {}\n");
       };
 
-      it.each(GATED)("%s is mapped to units by the gate and blocked through the wrapper", async (name) => {
+      it.each(GATED_NAMES)("%s is mapped to units by the gate and blocked through the wrapper", async (name) => {
         await signals();
         const file = join(f.proj, name);
         expect((await gateCheck(f, file)).exitCode).toBe(2);
@@ -202,7 +193,14 @@ describe.each(MODES)("Claude standards gate wrappers (%s)", (_mode, useBinBash) 
         expect(denial(r.stdout).permissionDecision).toBe("deny");
       });
 
-      it.each(UNGATED)("%s is allowed by both the wrapper and the gate", async (name) => {
+      it.each(GATED_NAMES)("%s read through the seen wrapper reaches the gate and nudges", async (name) => {
+        await signals();
+        const r = await read(f, join(f.proj, name));
+        expect(r.exitCode).toBe(0);
+        expect(JSON.parse(r.stdout).hookSpecificOutput.hookEventName).toBe("PostToolUse");
+      });
+
+      it.each(UNGATED_NAMES)("%s is allowed by both the wrapper and the gate", async (name) => {
         await signals();
         const file = join(f.proj, name);
         const direct = await gateCheck(f, file);
@@ -280,6 +278,48 @@ describe.each(MODES)("Claude standards gate wrappers (%s)", (_mode, useBinBash) 
       const r = await runRaw("standards-seen.sh", 'not json scope.md"', f.env);
       expect(r.exitCode).toBe(0);
       expect(r.stdout.trim()).toBe("");
+    });
+  });
+
+  describe("standards-seen.sh nudge", () => {
+    const context = (stdout: string) => JSON.parse(stdout).hookSpecificOutput;
+
+    it("nudges once on the first read of a gated source file, as PostToolUse additionalContext", async () => {
+      const file = join(f.proj, "src/main.rs");
+      const first = await read(f, file);
+      expect(first.exitCode).toBe(0);
+      expect(context(first.stdout)).toEqual({
+        hookEventName: "PostToolUse",
+        additionalContext: `kit: Rust standards apply to ${file}. Read these in full before your first Rust edit: ${f.scopeStd}, ${f.rustStd}.`,
+      });
+      expect((await read(f, join(f.proj, "src/lib.rs"))).stdout.trim()).toBe("");
+    });
+
+    it("a ranged read of a source file still nudges", async () => {
+      const r = await read(f, join(f.proj, "src/main.rs"), { range: { offset: 1, limit: 20 } });
+      expect(context(r.stdout).additionalContext).toContain(f.rustStd);
+    });
+
+    it("an agent that reads the nudged standards edits with no block", async () => {
+      await read(f, join(f.proj, "src/main.rs"));
+      await readBoth(f);
+      expect((await edit(f, join(f.proj, "src/main.rs"))).stdout.trim()).toBe("");
+    });
+
+    it("an agent that ignores the nudge is still blocked once at its first edit", async () => {
+      const file = join(f.proj, "src/main.rs");
+      await read(f, file);
+      expect(denial((await edit(f, file)).stdout).permissionDecision).toBe("deny");
+      expect((await edit(f, file)).stdout.trim()).toBe("");
+    });
+
+    it("nudges each agent key separately", async () => {
+      expect(context((await read(f, join(f.proj, "a.rs"), { who: SUB })).stdout).hookEventName).toBe("PostToolUse");
+      expect(context((await read(f, join(f.proj, "a.rs"), { who: MAIN })).stdout).hookEventName).toBe("PostToolUse");
+    });
+
+    it("stays silent for files outside any gated language", async () => {
+      expect((await read(f, join(f.proj, "notes.md"))).stdout.trim()).toBe("");
     });
   });
 

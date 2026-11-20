@@ -9,14 +9,16 @@
 #
 #   standards-gate.sh check FILE   exit 0 = allow; exit 2 = block, reason on stdout
 #   standards-gate.sh seen FILE    FILE was read; mark its unit loaded if it is a standards file
+#   standards-gate.sh nudge FILE   FILE was read; name the unread units it needs, once each (always exit 0)
 #   standards-gate.sh reset        forget every unit for this agent
 #
 # Env: KIT_PLUGIN_ROOT (standards root, see above),
 #      KIT_SCRATCH_KEY (agent key), KIT_STATE_DIR (via kit_state_dir).
 # FILE is absolute; the harness wrappers resolve relative paths first.
 #
-# State file, one line per event: "<unit> prompted|loaded", and "cpp-root yes|no ROOT"
+# State file, one line per event: "<unit> nudged|prompted|loaded", and "cpp-root yes|no ROOT"
 # caching whether a repository root holds a C++ source (ROOT last: it can hold spaces).
+# A nudged unit is still blocked at the next edit; only prompted or loaded lets an edit through.
 #
 # A unit whose file does not exist is skipped, and a language without core.md is not gated.
 # Any internal failure allows the edit: a kit defect must never stall an agent.
@@ -75,6 +77,7 @@ gate_physical_dir() {  # gate_physical_dir <dir>
 #   GATE_DIR, GATE_FILE   state directory and this agent's file
 #   GATE_ANY              " unit unit ... " every unit with a recorded state
 #   GATE_LOADED           " unit unit ... " every unit recorded loaded
+#   GATE_DONE             " unit unit ... " every unit recorded prompted or loaded
 #   GATE_CPP_YES/_NO      newline-delimited repository roots cached as holding / not holding C++
 # A unit is never prompted after it is loaded, so "loaded" needs no ordering. A root
 # recorded both ways (a race between two scans) counts as C++.
@@ -83,6 +86,7 @@ GATE_DIR=""
 GATE_FILE=""
 GATE_ANY=" "
 GATE_LOADED=" "
+GATE_DONE=" "
 GATE_CPP_YES=$'\n'
 GATE_CPP_NO=$'\n'
 gate_load() {
@@ -105,7 +109,10 @@ gate_load() {
         esac ;;
       *)
         GATE_ANY="${GATE_ANY}${unit} "
-        [ "$state" != loaded ] || GATE_LOADED="${GATE_LOADED}${unit} " ;;
+        case "$state" in
+          loaded) GATE_DONE="${GATE_DONE}${unit} "; GATE_LOADED="${GATE_LOADED}${unit} " ;;
+          prompted) GATE_DONE="${GATE_DONE}${unit} " ;;
+        esac ;;
     esac
   done < "$GATE_FILE"
 }
@@ -196,31 +203,62 @@ gate_units_for() {  # gate_units_for <abs-file>
   [ -z "$facet" ] || GATE_UNITS="${GATE_UNITS} ${lang}:${facet}"
 }
 
-cmd_check() {  # cmd_check <abs-file>; 0 = allow, 2 = block
-  local file="${1:-}" unit lines="" pending=0 paths="" label reason tool
-  case "$file" in /*) ;; *) return 0 ;; esac
-  gate_units_for "$file" || return 0
+# The units an absolute file needs that are not listed in the named state set (GATE_DONE
+# or GATE_ANY), with their paths: sets GATE_PENDING ("unit unit ") and GATE_PATHS
+# ("path, path"); returns 1 when none, for a relative path, or for an ungated language.
+gate_pending() {  # gate_pending <abs-file> <set-name>
+  local unit skip
+  GATE_PENDING=""; GATE_PATHS=""
+  case "$1" in /*) ;; *) return 1 ;; esac
+  gate_units_for "$1" || return 1
   gate_unit_path "$GATE_LANG"
-  [ -f "$REPLY" ] || return 0   # an ungated language never asks for scope
+  [ -f "$REPLY" ] || return 1   # an ungated language never asks for scope
   gate_load
+  skip="${!2}"
   for unit in $GATE_UNITS; do
     gate_unit_path "$unit"
     [ -f "$REPLY" ] || continue
-    case "$GATE_ANY" in *" $unit "*) continue ;; esac
-    pending=1
-    lines="${lines}${unit} prompted"$'\n'
-    paths="${paths:+${paths}, }${REPLY}"
+    case "$skip" in *" $unit "*) continue ;; esac
+    GATE_PENDING="${GATE_PENDING}${unit} "
+    GATE_PATHS="${GATE_PATHS:+${GATE_PATHS}, }${REPLY}"
   done
-  [ "$pending" = 1 ] || return 0
+  [ -n "$GATE_PENDING" ]
+}
+
+# " This project uses TOOL." for an HCL file whose project pins a tool, else "": sets REPLY.
+gate_hcl_suffix() {  # gate_hcl_suffix <abs-file>
+  local tool
+  REPLY=""
+  [ "$GATE_LANG" = hcl ] || return 0
+  tool="$("${script_dir}/hcl-tool.sh" resolve "$(dirname "$1")" 2>/dev/null | tr -d '[:space:]')"
+  [ -z "$tool" ] || REPLY=" This project uses ${tool}."
+}
+
+cmd_check() {  # cmd_check <abs-file>; 0 = allow, 2 = block
+  local file="${1:-}" unit lines="" reason
+  gate_pending "$file" GATE_DONE || return 0
+  for unit in $GATE_PENDING; do lines="${lines}${unit} prompted"$'\n'; done
   gate_append "$lines" || return 0   # can't remember the block, so don't block
-  gate_label "$GATE_LANG"; label="$REPLY"
-  reason="kit: before editing ${file}, read these standards in full and follow them for all ${label} code in this session, then retry this edit: ${paths}. kit asks once per standards file per session."
-  if [ "$GATE_LANG" = hcl ]; then
-    tool="$("${script_dir}/hcl-tool.sh" resolve "$(dirname "$file")" 2>/dev/null | tr -d '[:space:]')"
-    [ -z "$tool" ] || reason="${reason} This project uses ${tool}."
-  fi
-  printf '%s\n' "$reason"
+  gate_label "$GATE_LANG"
+  reason="kit: before editing ${file}, read these standards in full and follow them for all ${REPLY} code in this session, then retry this edit: ${GATE_PATHS}. kit asks once per standards file per session."
+  gate_hcl_suffix "$file"
+  printf '%s%s\n' "$reason" "$REPLY"
   return 2
+}
+
+# Runs after a read of a source file: names the standards units the file needs that this
+# agent has no state for, once per unit, so the agent reads them before it writes an edit
+# the block would discard. Never blocks; `check` still blocks a unit left at nudged.
+cmd_nudge() {  # cmd_nudge <abs-file>; always 0, the nudge on stdout
+  local file="${1:-}" unit lines="" label
+  gate_pending "$file" GATE_ANY || return 0
+  for unit in $GATE_PENDING; do lines="${lines}${unit} nudged"$'\n'; done
+  gate_append "$lines" || return 0   # can't remember the nudge, so stay quiet rather than repeat it
+  gate_label "$GATE_LANG"; label="$REPLY"
+  gate_hcl_suffix "$file"
+  printf 'kit: %s standards apply to %s. Read these in full before your first %s edit: %s.%s\n' \
+    "$label" "$file" "$label" "$GATE_PATHS" "$REPLY"
+  return 0
 }
 
 # Runs after every Read, so the basename test comes first and costs nothing. The
@@ -273,13 +311,14 @@ cmd_reset() {
 main() {
   local sub="${1:-}"
   case "$sub" in
-    check|seen|reset) ;;
-    *) echo "usage: standards-gate.sh {check FILE|seen FILE|reset}" >&2; return 64 ;;
+    check|seen|nudge|reset) ;;
+    *) echo "usage: standards-gate.sh {check FILE|seen FILE|nudge FILE|reset}" >&2; return 64 ;;
   esac
   [ -n "${KIT_PLUGIN_ROOT:-}" ] && [ -n "${KIT_SCRATCH_KEY:-}" ] || return 0
   case "$sub" in
     check) cmd_check "${2:-}" ;;
     seen) cmd_seen "${2:-}" ;;
+    nudge) cmd_nudge "${2:-}" ;;
     reset) cmd_reset ;;
   esac
 }

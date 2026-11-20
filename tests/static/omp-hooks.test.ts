@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
 import { CODE_STANDARDS_DIR, HOOKS_DIR } from "../utils/paths";
-import { collectEditedPaths, buildFormatCommand, resolveStateDir, createHandlers, registerHooks, runHookCommand, HookDeadlineError, type ExecOpts, type ExecResult, type HookHandlerDeps } from "../../plugins/kit-omp/omp/hooks";
+import { GATED_NAMES, UNGATED_NAMES } from "../utils/gated-names";
+import { collectEditedPaths, buildFormatCommand, resolveStateDir, createHandlers, registerHooks, runHookCommand, HookDeadlineError, GATED_FILE_NAME, type ExecOpts, type ExecResult, type HookHandlerDeps } from "../../plugins/kit-omp/omp/hooks";
 
 const PLUGIN_ROOT = "/plugin-root";
 const CWD = "/work";
@@ -212,14 +213,14 @@ describe("createHandlers: toolResult", () => {
     expect(deps.execCalls).toEqual([formatCall("/work", "/proj/a.go")]);
   });
 
-  it("ignores a read tool result", async () => {
+  it("does not track a read result for formatting", async () => {
     const deps = fakeDeps();
     const handlers = createHandlers(PLUGIN_ROOT, deps);
 
     await handlers.toolResult({ toolName: "read", input: { path: "/proj/a.go" }, isError: false }, ctxFor("S1"));
     await handlers.sessionStop({}, ctxFor("S1"));
 
-    expect(deps.execCalls).toEqual([]);
+    expect(deps.execCalls).toEqual([gateCall("/work", "S1", "nudge", "/proj/a.go")]);
   });
 
   it("ignores an errored write result", async () => {
@@ -468,6 +469,54 @@ describe("createHandlers: standards reads and compaction", () => {
   });
 });
 
+describe("GATED_FILE_NAME stays in sync with the gate's file table", () => {
+  it.each(GATED_NAMES)("matches %s", (name) => expect(GATED_FILE_NAME.test(`/p/${name}`)).toBe(true));
+  it.each(UNGATED_NAMES)("does not match %s", (name) => expect(GATED_FILE_NAME.test(`/p/${name}`)).toBe(false));
+});
+
+describe("createHandlers: nudge on source reads", () => {
+  const NUDGE = "kit: Rust standards apply to /work/src/main.rs. Read these in full before your first Rust edit: /s/scope.md, /s/rust/core.md.";
+
+  it.each([
+    ["src/main.rs", "/work/src/main.rs"],
+    ["/proj/main.go:10-40", "/proj/main.go"],
+    ["/proj/app.py:raw", "/proj/app.py"],
+  ])("asks the gate to nudge for %s and returns its text as additionalContext", async (path, expected) => {
+    const deps = fakeDeps(async () => ({ stdout: `${NUDGE}\n`, stderr: "", code: 0 }));
+    const result = await createHandlers(PLUGIN_ROOT, deps).toolResult(
+      { toolName: "read", input: { path }, isError: false }, ctxFor("S1"),
+    );
+    expect(result).toEqual({ additionalContext: NUDGE });
+    expect(deps.execCalls).toEqual([gateCall("/work", "S1", "nudge", expected)]);
+  });
+
+  it("returns nothing when the gate is silent or fails, and never spawns for ungated or errored reads", async () => {
+    const silent = fakeDeps();
+    expect(await createHandlers(PLUGIN_ROOT, silent).toolResult({ toolName: "read", input: { path: "a.rs" }, isError: false }, ctxFor("S1")))
+      .toBeUndefined();
+    const broken = fakeDeps(async () => { throw new Error("spawn failed"); });
+    expect(await createHandlers(PLUGIN_ROOT, broken).toolResult({ toolName: "read", input: { path: "a.rs" }, isError: false }, ctxFor("S1")))
+      .toBeUndefined();
+    const none = fakeDeps();
+    const handlers = createHandlers(PLUGIN_ROOT, none);
+    await handlers.toolResult({ toolName: "read", input: { path: "README.md" }, isError: false }, ctxFor("S1"));
+    await handlers.toolResult({ toolName: "read", input: { path: "a.rs" }, isError: true }, ctxFor("S1"));
+    await handlers.toolResult({ toolName: "grep", input: { path: "a.rs" }, isError: false }, ctxFor("S1"));
+    expect(none.execCalls).toEqual([]);
+  });
+
+  it.each(["https://example.com/print.go", "skill://x/y.py", "a.zip:src/main.go"])(
+    "does not spawn the gate for the non-local read %s", async (path) => {
+      const deps = fakeDeps(async () => ({ stdout: `${NUDGE}\n`, stderr: "", code: 0 }));
+      const result = await createHandlers(PLUGIN_ROOT, deps).toolResult(
+        { toolName: "read", input: { path }, isError: false }, ctxFor("S1"),
+      );
+      expect(result).toBeUndefined();
+      expect(deps.execCalls).toEqual([]);
+    },
+  );
+});
+
 const temporaryRoots: string[] = [];
 afterEach(() => temporaryRoots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
@@ -531,6 +580,29 @@ describe("registerHooks: standards gate integration", () => {
         block: true,
         reason: expect.stringContaining("code-standards/rust/core.md"),
       });
+    } finally {
+      if (original === undefined) delete process.env.KIT_STATE_DIR;
+      else process.env.KIT_STATE_DIR = original;
+    }
+  });
+
+  it("nudges once on a source read; reading the named standards lets the first edit through", async () => {
+    const project = gateProject();
+    const original = process.env.KIT_STATE_DIR;
+    process.env.KIT_STATE_DIR = project.state;
+    try {
+      const registered = registerWithState(project);
+      const ctx = { cwd: project.cwd, hasUI: false, sessionManager: { getSessionId: () => "reader" } };
+      const toolCall = registered.get("tool_call")!;
+      const toolResult = registered.get("tool_result")!;
+      expect(await toolResult({ toolName: "read", input: { path: "main.rs" }, isError: false }, ctx)).toEqual({
+        additionalContext: expect.stringContaining("code-standards/rust/core.md"),
+      });
+      expect(await toolResult({ toolName: "read", input: { path: "main.rs" }, isError: false }, ctx)).toBeUndefined();
+      for (const path of project.standards) {
+        await toolResult({ toolName: "read", input: { path }, isError: false }, ctx);
+      }
+      expect(await toolCall({ toolName: "edit", input: { path: "main.rs" } }, ctx)).toBeUndefined();
     } finally {
       if (original === undefined) delete process.env.KIT_STATE_DIR;
       else process.env.KIT_STATE_DIR = original;

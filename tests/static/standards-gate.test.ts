@@ -66,7 +66,7 @@ function reasonFor(file: string, lang: string, units: string[], pluginRoot = roo
   );
 }
 
-function gate(sub: "check" | "seen" | "reset", file: string | undefined, key: string, env: Record<string, string> = {}) {
+function gate(sub: "check" | "seen" | "nudge" | "reset", file: string | undefined, key: string, env: Record<string, string> = {}) {
   return runNeutralScript("standards-gate.sh", {
     args: file === undefined ? [sub] : [sub, file],
     cwd: work,
@@ -499,6 +499,73 @@ describe("standards-gate.sh seen", () => {
     await readUnits(reader, ["scope", "go"]);
     await expectAllowed(goFile(), reader);
     await expectBlocked(goFile(), "go", other);
+  });
+});
+
+describe("standards-gate.sh nudge", () => {
+  const nudgeFor = (file: string, lang: string, units: string[], suffix = "") =>
+    `kit: ${LABELS[lang]} standards apply to ${file}. Read these in full before your first ${LABELS[lang]} edit: ` +
+    `${units.map((u) => unitPath(u)).join(", ")}.${suffix}\n`;
+
+  it("names the unread units once, records them nudged, and never blocks", async () => {
+    const key = freshKey();
+    const file = join(work, "main.go");
+    const first = await gate("nudge", file, key);
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout).toBe(nudgeFor(file, "go", ["scope", "go"]));
+    expect(await stateOf(key)).toBe("scope nudged\ngo nudged\n");
+    const again = await gate("nudge", join(work, "other.go"), key);
+    expect(again.exitCode).toBe(0);
+    expect(again.stdout).toBe("");
+  });
+
+  it("still blocks the first edit when the agent ignored the nudge, then allows the retry", async () => {
+    const key = freshKey();
+    const file = join(work, "main.go");
+    await gate("nudge", file, key);
+    await expectBlocked(file, "go", key);
+    await expectAllowed(file, key);
+  });
+
+  it("allows the edit with no block once the nudged units are read", async () => {
+    const key = freshKey();
+    const file = join(work, "main.go");
+    await gate("nudge", file, key);
+    await readUnits(key, ["scope", "go"]);
+    await expectAllowed(file, key);
+  });
+
+  it("names only units the agent has no state for", async () => {
+    const key = freshKey();
+    await readUnits(key, ["scope"]);
+    const lib = join(work, "lib.rs");
+    expect((await gate("nudge", lib, key)).stdout).toBe(nudgeFor(lib, "rust", ["rust"]));
+    const cargo = join(work, "Cargo.toml");
+    expect((await gate("nudge", cargo, key)).stdout).toBe(nudgeFor(cargo, "rust", ["rust:project"]));
+  });
+
+  it("is silent for ungated files and relative paths, and records nothing", async () => {
+    const key = freshKey();
+    for (const file of [join(work, "README.md"), "main.go", ""]) {
+      const r = await gate("nudge", file, key);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toBe("");
+    }
+    expect(await stateOf(key)).toBe("");
+  });
+
+  it("appends the pinned HCL tool", async () => {
+    const key = freshKey();
+    const file = join(work, "main.tf");
+    expect((await gate("nudge", file, key)).stdout).toBe(nudgeFor(file, "hcl", ["scope", "hcl"], " This project uses tofu."));
+  });
+
+  it("stays silent when it cannot record state, so the nudge is never repeated", async () => {
+    const notADir = join(base, "nudge-not-a-dir");
+    await writeFile(notADir, "file\n");
+    const r = await gate("nudge", join(work, "main.go"), freshKey(), { KIT_STATE_DIR: join(notADir, "state") });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("");
   });
 });
 

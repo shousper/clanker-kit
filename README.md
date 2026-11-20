@@ -99,7 +99,7 @@ Each stage flows into the next automatically. You can enter at any point if you 
 | Event | Hook | Trigger |
 |-------|------|---------|
 | PreToolUse | `standards-check.sh` | Edit/Write/MultiEdit — blocks an agent's first edit in Go, Rust, HCL, Tailwind CSS, Python or C++ until it has read the shared scope rules, the language's core standards, and the project standards when the edit changes build or tool configuration; asks once per standards file per agent, and allows the edit if the check itself fails |
-| PostToolUse | `standards-seen.sh` | Read — marks a standards file as loaded when the agent reads it in full; a ranged read doesn't count |
+| PostToolUse | `standards-seen.sh` | Read — marks a standards file as loaded when the agent reads it in full (a ranged read doesn't count); on the first read of a source file in a gated language, adds a note naming the standards to read before the first edit |
 | PostToolUse | `record.sh` | Write/Edit — records edited source paths (Go, Rust, JS/TS, Python, C++, HCL/Terraform/OpenTofu) to an agent-scoped scratch; never modifies files |
 | Stop + SubagentStop | `format-on-stop.sh` | End of turn — formats the touched files and runs checks once (ruff and clang-format run only in projects that configure them), surfacing results as a single non-blocking message. It does not run `cargo check`, `cargo clippy`, or `tsc` |
 | SessionStart | `session-start.sh` | Session startup, resume, clear, compact — kit intro |
@@ -115,7 +115,7 @@ export KIT_FORMAT_SKIP=ruff
 
 Both harnesses share one state cleanup, `shared/hooks/state-cleanup.sh`. At session start it prunes kit state files (standards-gate state and formatter scratch) that are 48 hours old or older. When the conversation is cleared (Claude `/clear`, OMP `/new`) it forgets that session's state files, because the context they described is gone. A resumed or forked session keeps its state.
 
-On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`, `tool_result`, `session_stop`, and `session_compact` events, and runs the cleanup from the `session_start` and `session_before_switch` events. The formatter is the shared script, so it does not run `cargo check`, `cargo clippy`, or `tsc`.
+On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`, `tool_result`, `session_stop`, and `session_compact` events, and `tool_result` also returns the nudge as `additionalContext`. It runs the cleanup from the `session_start` and `session_before_switch` events. The formatter is the shared script, so it does not run `cargo check`, `cargo clippy`, or `tsc`.
 
 ## Agents
 
@@ -140,7 +140,7 @@ A hook enforces them. The standards live in three kinds of file:
 - `code-standards/<lang>/core.md` holds the language's core standards, for `go`, `rust`, `hcl`, `tailwindcss`, `python` and `cpp`.
 - `code-standards/<lang>/project.md` holds the project standards for build and tool configuration. It exists for `rust`, `python` and `cpp` only.
 
-The first time an agent edits a file in one of these languages, kit blocks the edit and lists the standards files the agent hasn't read yet. The agent reads each one in full and retries. Which files an edit needs depends on the file:
+The first time an agent reads a file in one of these languages, kit adds a note naming the standards files the agent hasn't read yet. An agent that reads them before its first edit is never blocked. If the agent edits anyway, or writes a new file without reading anything first, kit blocks that first edit and lists the same files; the agent reads each one in full and retries. Which files an edit needs depends on the file:
 
 | Example file | Files required |
 |--------------|----------------|

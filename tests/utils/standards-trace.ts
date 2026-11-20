@@ -4,7 +4,8 @@
  * unit, and its project unit when the case has that facet) before its first successful
  * edit, read each exactly once from the exact path the gate named (a stale copy under
  * another root does not count and is a violation), did not search for the files, and was
- * blocked at most once. Pure functions over events,
+ * blocked no more often than the case allows (the read-time nudge means none, for a file
+ * the agent read first). Pure functions over events,
  * so the pass/fail logic is covered offline (tests/static/standards-trace.test.ts) and the
  * live eval (tests/evals/code-standards.test.ts) only supplies real streams.
  */
@@ -194,7 +195,7 @@ export function analyseStandards(
 }
 
 /** Every way the run broke the contract, empty when it held. */
-export function standardsViolations(a: StandardsAnalysis, lang: StandardsLang, units: StandardsUnit[]): string[] {
+export function standardsViolations(a: StandardsAnalysis, lang: StandardsLang, units: StandardsUnit[], maxBlocks = 1): string[] {
   const out: string[] = [];
   if (a.firstEdit === -1) out.push(`no successful ${lang} edit through an edit tool (shell edits are not gated)`);
   for (const u of a.units) {
@@ -202,7 +203,9 @@ export function standardsViolations(a: StandardsAnalysis, lang: StandardsLang, u
     if (reads.length !== 1) out.push(`expected exactly 1 successful read of ${unitFile(u)}, saw ${reads.length}`);
     else if (a.firstEdit !== -1 && reads[0] > a.firstEdit) out.push(`${u} was read after the first successful ${lang} edit`);
   }
-  if (a.blocks.length > 1) out.push(`expected at most 1 gate block, saw ${a.blocks.length}`);
+  if (a.blocks.length > maxBlocks) {
+    out.push(maxBlocks === 0 ? `expected no gate block, saw ${a.blocks.length}` : `expected at most ${maxBlocks} gate block, saw ${a.blocks.length}`);
+  }
   for (const block of a.blocks) {
     for (const u of units) {
       if (!block.includes(unitFile(u))) out.push(`a block did not name ${unitFile(u)}: ${block.slice(0, 160)}`);
@@ -268,8 +271,9 @@ export async function readGateStates(stateDir: string): Promise<GateStates> {
 /**
  * Delegation: only the top-level stream is observable (OMP's --mode json carries a
  * subagent's progress, not its tool calls), so judge the subagent from the gate's own
- * state. The top-level agent must have no state for any expected unit; some other agent
- * key must end at `loaded` for every expected unit, each after at most one `prompted`.
+ * state. The top-level agent must have no state other than `nudged` for any expected unit;
+ * some other agent key must end at `loaded` for every expected unit, each unit allowing at
+ * most `maxBlocks` `prompted` lines.
  * A subagent that edited without reading would have been blocked and ended at `prompted`,
  * so `loaded` plus a landed edit means it read before its edit stuck.
  */
@@ -278,17 +282,19 @@ export function delegationViolations(
   topKey: string | undefined,
   lang: StandardsLang,
   units: StandardsUnit[] = unitsFor(lang),
+  maxBlocks = 1,
 ): string[] {
   const out: string[] = [];
   if (!topKey) return ["no top-level session id in the stream"];
-  const touched = units.filter((u) => (states[topKey]?.[u] ?? []).length > 0);
+  // A nudge only says the top-level agent read a file before delegating; it did no gated work.
+  const touched = units.filter((u) => (states[topKey]?.[u] ?? []).some((s) => s !== "nudged"));
   if (touched.length > 0) out.push(`the top-level agent touched ${touched.join(", ")} itself; the subagent path was not exercised`);
   const subs = Object.entries(states).filter(([key]) => key !== topKey);
   const missing = new Map<string, StandardsUnit[]>();
   for (const [key, perUnit] of subs) {
     for (const unit of units) {
       const prompted = (perUnit[unit] ?? []).filter((x) => x === "prompted").length;
-      if (prompted > 1) out.push(`subagent ${key} was blocked ${prompted} times on ${unit}`);
+      if (prompted > maxBlocks) out.push(`subagent ${key} was blocked ${prompted} times on ${unit}`);
     }
     missing.set(key, units.filter((u) => (perUnit[u] ?? []).at(-1) !== "loaded"));
   }
