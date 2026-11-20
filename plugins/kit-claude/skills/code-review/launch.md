@@ -13,7 +13,7 @@ Workflow({
 
 ## Model & Effort
 
-`review.workflow.js` pins per-dimension `model`/`effort` in its default `reviewDims`: correctness, quality, tests, and security run on Sonnet (high); architecture, the one deep-judgment safety net, runs on Opus (xhigh). Pass a custom `reviewDims` (`[{ key, focus, model, effort }, ...]`) to change this.
+`review.workflow.js` names a kit agent per dimension in its default `reviewDims`: correctness, quality, tests, and security run on `kit-worker` (Sonnet, high); architecture, the one deep-judgment safety net, runs on `kit-arbiter` (Opus, xhigh). Pass a custom `reviewDims` (`[{ key, focus, agent }, ...]`, with `agent` a scoped name such as `kit:kit-worker`) to change this.
 
 ## Handling the result
 

@@ -16,6 +16,7 @@ import { isAbsolute, resolve } from "node:path";
  * resolution) take no OMP-shaped input and are unit-tested without an OMP
  * process. `createHandlers` builds the four testable handlers from injected
  * dependencies; `registerHooks` is the only part that touches `ExtensionAPI`.
+ * A read of a gated source file returns the gate's nudge as tool_result additionalContext.
  *
  * Paths arrive relative to the session's working directory, which is not the
  * OMP process's cwd when the session runs in a worktree or after `/move`.
@@ -79,6 +80,17 @@ export function buildFormatCommand(pluginRoot: string, files: readonly string[])
  *  same-named file elsewhere only costs one no-op spawn. */
 const STANDARDS_FILE_PATH = /(^|\/)(scope|core|project)\.md(:raw)?$/;
 
+/** Basenames the standards gate maps to a language, mirroring gate_units_for in
+ *  shared/hooks/standards-gate.sh, so a read of any other file never spawns the gate.
+ *  A test checks one name per pattern family. */
+export const GATED_FILE_NAME =
+  /(^|\/)(go\.(mod|sum)|Cargo\.toml|clippy\.toml|rust-toolchain\.toml|pyproject\.toml|CMakeLists\.txt|CMakePresets\.json|\.clang-tidy|\.clang-format|[^/]*\.(go|rs|tf|tofu|tofu\.json|tfvars|py|pyi|cpp|cc|cxx|hpp|hh|hxx|ipp|tpp|inl|h|cmake|css|tsx|jsx|vue|svelte|astro|html))$/;
+
+/** `read` path selectors (`:50-80`, `:raw`, …), which are not part of the file path. */
+const READ_SELECTOR = /(?::(?:raw|img|conflicts|-?\d[\d,+-]*))+$/;
+// URLs, internal URIs (skill://) and archive members (a.zip:src/x.go) are not local files.
+const NON_LOCAL_READ = /^[a-z][a-z0-9+.-]*:\/\/|\.(?:zip|tar|tgz|gz|7z|rar|jar|whl):/i;
+
 // ---------------------------------------------------------------------------
 // Handler factory — injected deps make this testable without an OMP runtime
 // ---------------------------------------------------------------------------
@@ -129,11 +141,13 @@ export interface ToolCallLike {
 
 export type ToolCallResult = { block: true; reason: string } | undefined;
 
+export type ToolResultReturn = { additionalContext: string } | undefined;
+
 export interface HookHandlers {
   sessionStart(event: unknown, ctx?: MinimalHookContext): Promise<void>;
   sessionBeforeSwitch(event: unknown, ctx?: MinimalHookContext): Promise<undefined>;
   toolCall(event: ToolCallLike, ctx?: MinimalHookContext): Promise<ToolCallResult>;
-  toolResult(event: ToolResultLike, ctx?: MinimalHookContext): Promise<void>;
+  toolResult(event: ToolResultLike, ctx?: MinimalHookContext): Promise<ToolResultReturn>;
   sessionCompact(event: unknown, ctx?: MinimalHookContext): Promise<void>;
   sessionStop(event: unknown, ctx?: MinimalHookContext): Promise<void>;
   agentEnd(event: unknown, ctx?: MinimalHookContext): Promise<void>;
@@ -186,13 +200,25 @@ export function createHandlers(
       cwd: cwdFor(ctx),
       env: { KIT_SCRATCH_KEY: sessionKeyFor(ctx) },
     });
-  const markStandardsRead = async (event: ToolResultLike, ctx?: MinimalHookContext): Promise<void> => {
-    const path = event.input?.path;
-    if (event.toolName !== "read" || typeof path !== "string" || !STANDARDS_FILE_PATH.test(path)) return;
+  /** A full read of a standards file loads its unit. A read of a source file in a gated
+   *  language asks the gate for a nudge (scope and core, once per unit) and returns it,
+   *  so the agent reads the standards before it writes an edit the block would discard. */
+  const onRead = async (event: ToolResultLike, ctx?: MinimalHookContext): Promise<string | undefined> => {
+    const raw = event.input?.path;
+    if (event.toolName !== "read" || typeof raw !== "string") return undefined;
+    const absolute = (p: string) => (isAbsolute(p) ? p : resolve(cwdFor(ctx), p));
     try {
-      await runGate(["seen", isAbsolute(path) ? path : resolve(cwdFor(ctx), path)], ctx);
+      if (STANDARDS_FILE_PATH.test(raw)) {
+        await runGate(["seen", absolute(raw)], ctx);
+        return undefined;
+      }
+      if (NON_LOCAL_READ.test(raw)) return undefined;
+      const path = raw.replace(READ_SELECTOR, "");
+      if (!GATED_FILE_NAME.test(path)) return undefined;
+      return (await runGate(["nudge", absolute(path)], ctx)).stdout.trim() || undefined;
     } catch {
-      // Failing to record a read only means the gate asks once more.
+      // A missed read only means the edit-time block asks instead.
+      return undefined;
     }
   };
 
@@ -239,12 +265,14 @@ export function createHandlers(
     },
 
     async toolResult(event, ctx) {
-      if (event.isError) return;
-      await markStandardsRead(event, ctx);
+      if (event.isError) return undefined;
+      const nudge = await onRead(event, ctx);
       const paths = collectEditedPaths(event.toolName, event.input, cwdFor(ctx));
-      if (paths.length === 0) return;
-      const files = filesFor(sessionKeyFor(ctx));
-      for (const path of paths) files.add(path);
+      if (paths.length > 0) {
+        const files = filesFor(sessionKeyFor(ctx));
+        for (const path of paths) files.add(path);
+      }
+      return nudge ? { additionalContext: nudge } : undefined;
     },
 
     async sessionCompact(_event, ctx) {
@@ -403,9 +431,7 @@ export function registerHooks(pi: ExtensionAPI, pluginRoot: string): void {
     await handlersFor(ctx).sessionStart(event, ctx);
   });
   pi.on("tool_call", async (event, ctx) => handlersFor(ctx).toolCall(event as unknown as ToolCallLike, ctx));
-  pi.on("tool_result", async (event, ctx) => {
-    await handlersFor(ctx).toolResult(event, ctx);
-  });
+  pi.on("tool_result", async (event, ctx) => handlersFor(ctx).toolResult(event, ctx));
   pi.on("session_compact" as never, async (event: unknown, ctx: ExtensionContext) => {
     await handlersFor(ctx).sessionCompact(event, ctx);
   });

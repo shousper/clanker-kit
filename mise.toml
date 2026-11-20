@@ -1,13 +1,13 @@
 [tools]
-bun = "1.3.14"
+bun = "1.4.5"
 # Real jq: the hooks parse JSON with it, and some PATHs ship jaq under the same name.
 jq = "1.8.2"
 shellcheck = "0.11.0"
-vale = "3.20.0"
-ruff = "0.16.8"
+vale = "3.27.0"
+ruff = "0.17.5"
 # The aqua backend installs the release binary, so the repo needs no Node.
-claude = "2.1.294"
-"github:can1357/oh-my-pi" = "18.8.6"
+claude = "2.1.328"
+"github:can1357/oh-my-pi" = "19.0.1"
 
 [tasks.deps]
 description = "Install JavaScript dependencies from the lockfile"

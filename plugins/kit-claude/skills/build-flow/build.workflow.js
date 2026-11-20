@@ -36,6 +36,11 @@ if (typeof a === 'string') {
   }
 }
 const MAX_FIX_ROUNDS = a.maxFixRounds ?? 3
+// Stage -> kit agent. Each agent's frontmatter (plugins/kit-claude/agents) pins its model and
+// effort, so the runner names the agent and never sets either per call.
+const WORKER = 'kit:kit-worker'
+const VERIFIER = 'kit:kit-verifier'
+const ARBITER = 'kit:kit-arbiter'
 // Workflow agents inherit the SESSION shell's cwd — not the path the
 // orchestrator had in mind. A launch from the wrong directory split-brains the
 // run (some agents edit the main checkout, reviewers see "no implementation",
@@ -86,7 +91,7 @@ const stage = async (label, prompt, opts) => {
   return value == null ? { ok: false, label } : { ok: true, value }
 }
 const stageFailure = (r) =>
-  `stage agent ${r.label} did not complete (stopped in /workflows, or an unrecoverable API error). Check the run in /workflows, fix the cause, then relaunch with resumeFromRunId and the SAME args — completed agents replay from cache and this one runs again.`
+  `stage agent ${r.label} did not complete (stopped in /workflows, or an unrecoverable API error such as a provider rate limit). If the model provider refused the request, report this to the user and wait for direction. Otherwise check the run in /workflows, fix the cause, then relaunch with resumeFromRunId and the SAME args — completed agents replay from cache and this one runs again.`
 const blocked = (blockedAtBatch, reason, extra) => ({ status: 'blocked', blockedAtBatch, reason, ledger, results, ...(extra ?? {}) })
 const actionable = (fs) => fs.filter((f) => f && (f.severity === 'critical' || f.severity === 'important'))
 
@@ -250,7 +255,7 @@ for (let b = startBatch; b < batches.length; b++) {
 
   // Implement sequentially within a batch (parallel file-writers would need worktree isolation — deferred).
   for (const task of batch) {
-    const r = await stage(`impl:${task.id}`, implPrompt(task), { phase: 'Implement', model: 'sonnet', effort: 'high', schema: IMPL_SCHEMA })
+    const r = await stage(`impl:${task.id}`, implPrompt(task), { phase: 'Implement', agentType: WORKER, schema: IMPL_SCHEMA })
     if (!r.ok) return blocked(b, stageFailure(r))
     if (r.value.needsHumanInput) return blocked(b, r.value.needsHumanInput.reason)
     results.push({ batch: b, task: task.id, ...r.value })
@@ -263,11 +268,11 @@ for (let b = startBatch; b < batches.length; b++) {
   phase('Review')
   const finalBatch = b === batches.length - 1
   const [spec, quality] = await parallel([
-    () => stage(`spec:b${b + 1}`, specPrompt(batch), { phase: 'Review', model: 'sonnet', effort: 'high', schema: REVIEW_SCHEMA }),
-    // Quality reviews run on Sonnet; the final batch escalates to Opus — its
+    () => stage(`spec:b${b + 1}`, specPrompt(batch), { phase: 'Review', agentType: WORKER, schema: REVIEW_SCHEMA }),
+    // Quality reviews run on kit-worker; the final batch escalates to kit-arbiter (Opus) — its
     // `git diff main` covers the whole run, so this is the run-level safety net.
     () => stage(`quality:b${b + 1}`, qualityPrompt(batch), {
-      phase: 'Review', model: finalBatch ? 'opus' : 'sonnet', effort: finalBatch ? 'xhigh' : 'high', schema: REVIEW_SCHEMA,
+      phase: 'Review', agentType: finalBatch ? ARBITER : WORKER, schema: REVIEW_SCHEMA,
     }),
   ])
   for (const r of [spec, quality]) if (!r.ok) return blocked(b, stageFailure(r))
@@ -278,13 +283,13 @@ for (let b = startBatch; b < batches.length; b++) {
       return blocked(b, `Review unresolved after ${MAX_FIX_ROUNDS} fix round(s)`, { findings })
     }
     phase('Fix')
-    const fixModel = round < MAX_FIX_ROUNDS - 1 ? 'sonnet' : 'opus' // staged escalation
-    log(`Batch ${b + 1} fix round ${round + 1} (${fixModel}): ${findings.length} finding(s)`)
-    const fix = await stage(`fix:b${b + 1}:r${round + 1}`, fixPrompt(batch, findings), { phase: 'Fix', model: fixModel, effort: 'high', schema: IMPL_SCHEMA })
+    const fixAgent = round < MAX_FIX_ROUNDS - 1 ? WORKER : ARBITER // staged escalation
+    log(`Batch ${b + 1} fix round ${round + 1} (${fixAgent}): ${findings.length} finding(s)`)
+    const fix = await stage(`fix:b${b + 1}:r${round + 1}`, fixPrompt(batch, findings), { phase: 'Fix', agentType: fixAgent, schema: IMPL_SCHEMA })
     if (!fix.ok) return blocked(b, stageFailure(fix), { findings })
     if (fix.value.needsHumanInput) return blocked(b, fix.value.needsHumanInput.reason, { findings })
     round++
-    const recheck = await stage(`recheck:b${b + 1}:r${round}`, recheckPrompt(batch, findings), { phase: 'Review', model: 'sonnet', effort: 'high', schema: REVIEW_SCHEMA })
+    const recheck = await stage(`recheck:b${b + 1}:r${round}`, recheckPrompt(batch, findings), { phase: 'Review', agentType: WORKER, schema: REVIEW_SCHEMA })
     if (!recheck.ok) return blocked(b, stageFailure(recheck), { findings })
     findings = actionable(recheck.value.findings ?? [])
   }
@@ -299,7 +304,7 @@ for (let b = startBatch; b < batches.length; b++) {
 phase('Verify')
 let verification = null
 for (let v = 0; ; v++) {
-  const ver = await stage(`verify:r${v + 1}`, verifyPrompt(), { phase: 'Verify', model: 'sonnet', effort: 'low', schema: VERIFY_SCHEMA })
+  const ver = await stage(`verify:r${v + 1}`, verifyPrompt(), { phase: 'Verify', agentType: VERIFIER, schema: VERIFY_SCHEMA })
   if (!ver.ok) return blocked(batches.length - 1, stageFailure(ver))
   verification = ver.value
   if (verification.passed) break
@@ -307,7 +312,7 @@ for (let v = 0; ; v++) {
     return blocked(batches.length - 1, `Final verification still failing after ${v} fix round(s): ${verification.summary}`, { findings: verification.failures })
   }
   log(`Final verification failed (${verification.failures?.length ?? 0} failure(s)) — fix round ${v + 1}`)
-  const fix = await stage(`verify-fix:r${v + 1}`, verifyFixPrompt(verification), { phase: 'Verify', model: v === 0 ? 'sonnet' : 'opus', effort: 'high', schema: IMPL_SCHEMA })
+  const fix = await stage(`verify-fix:r${v + 1}`, verifyFixPrompt(verification), { phase: 'Verify', agentType: v === 0 ? WORKER : ARBITER, schema: IMPL_SCHEMA })
   if (!fix.ok) return blocked(batches.length - 1, stageFailure(fix), { findings: verification.failures })
   if (fix.value.needsHumanInput) return blocked(batches.length - 1, fix.value.needsHumanInput.reason, { findings: verification.failures })
 }

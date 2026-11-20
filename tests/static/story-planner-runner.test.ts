@@ -14,7 +14,7 @@ const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
 
 type Row = { id: string; status: string; plan?: string; batches?: unknown[]; question?: string; error?: string; model?: string; agent?: string };
 type Envelope = { status: string; reason?: string; planned: Row[]; unimplementable: Row[]; failed: Row[] };
-type ClaudeOpts = { label?: string; model?: string; effort?: string; schema?: unknown };
+type ClaudeOpts = { label?: string; agentType?: string; model?: string; effort?: string; schema?: unknown };
 type OmpOpts = { agent?: string; label?: string; schema?: unknown };
 type Respond = (prompt: string) => unknown;
 const HANGS = Symbol("hangs");
@@ -123,9 +123,13 @@ describe("planner runners: shared contract", () => {
 });
 
 describe("planner runners: tier mapping", () => {
-  it("claude pins model and effort per complexity", async () => {
+  it("claude names one agent per complexity", async () => {
     const { calls } = await runClaude([story("st-0001"), story("st-0002", "hard"), story("st-0003", "frontier")], () => planned);
-    expect(calls.map((c) => [c.model, c.effort])).toEqual([["sonnet", "high"], ["opus", "xhigh"], ["fable", "xhigh"]]);
+    expect(calls.map((c) => c.agentType)).toEqual(["stories:story-planner-routine", "stories:story-planner-hard", "stories:story-planner-frontier"]);
+    for (const c of calls) {
+      expect(c).not.toHaveProperty("model");
+      expect(c).not.toHaveProperty("effort");
+    }
   });
 
   it("omp names one agent per complexity, with hyphenated labels, a schema, no model, and a bounded wait", async () => {
@@ -156,9 +160,14 @@ describe("planner runners: tier mapping", () => {
     expect(JSON.parse(files["local://stories/st-0001.plan.json"])).toMatchObject({ id: "st-0001", status: "planned", batches: planned.batches });
   });
 
-  it("omp turns a model-resolution failure into an error naming the agent and its override key", async () => {
+  it("omp turns a model-resolution failure into an error naming the agent, to report to the user", async () => {
     const { out } = await runOmpRunner([story("st-0001", "hard")], () => { throw new Error("No model selected.\n\nUse /login"); });
     expect(out.failed[0].error).toContain("story-planner-hard");
-    expect(out.failed[0].error).toContain("task.agentModelOverrides.story-planner-hard");
+    expect(out.failed[0].error).toContain("report this to your human partner");
+  });
+
+  it("omp turns a provider refusal into advice to report to the user", async () => {
+    const { out } = await runOmpRunner([story("st-0001")], () => { throw new Error("overloaded_error: Overloaded"); });
+    expect(out.failed[0].error).toContain("The model provider refused the request. Report this to the user and wait for direction.");
   });
 });

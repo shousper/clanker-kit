@@ -8,7 +8,7 @@
     {
       "name": "kit",
       "description": "A review-first development workflow: brainstorming, planning, build, and review skills, plus session hooks and code standards, with a staged build-flow that runs independent spec and quality review gates before every change lands.",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "source": "./plugins/kit-omp"
     },
     {
@@ -20,7 +20,7 @@
     {
       "name": "stories",
       "description": "Story-based autonomous workflow: markdown story board, typed verification gates, goal loop, parallel same-machine workers",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "source": "./plugins/stories-omp"
     },
     {

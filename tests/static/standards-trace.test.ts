@@ -69,6 +69,13 @@ describe("standards trace", () => {
     expect(verdict(out)).toEqual([]);
   });
 
+  it("fails any block when the case allows none", () => {
+    const blocked = ompStream([{ ...EDIT, isError: true, text: BLOCK }, rd(SCOPE), rd(STD), EDIT]);
+    const a = analyseStandards(omp, omp.parse(blocked), "go", GO_UNITS, WHERE);
+    expect(standardsViolations(a, "go", GO_UNITS, 0)).toEqual(["expected no gate block, saw 1"]);
+    expect(standardsViolations(a, "go", GO_UNITS)).toEqual([]);
+  });
+
   it("passes a proactive read of every unit with no block", () => {
     expect(verdict(ompStream([rd(SCOPE), rd(STD), EDIT]))).toEqual([]);
   });
@@ -409,6 +416,15 @@ describe("delegation judged from the gate's state", () => {
     expect(delegationViolations({ top: { scope: ["prompted"] }, sub: LOADED }, "top", "go")).toEqual([
       expect.stringContaining("top-level agent"),
     ]);
+  });
+
+  it("ignores a nudge on the top-level agent: reading a file is not doing the work", () => {
+    expect(delegationViolations({ top: { scope: ["nudged"], go: ["nudged"] }, sub: LOADED }, "top", "go")).toEqual([]);
+  });
+
+  it("with no blocks allowed, fails a subagent blocked once", () => {
+    const v = delegationViolations({ sub: { scope: ["nudged", "prompted", "loaded"], go: ["nudged", "loaded"] } }, "top", "go", unitsFor("go"), 0);
+    expect(v).toEqual(["subagent sub was blocked 1 times on scope"]);
   });
 
   it("fails a subagent blocked twice on a unit", () => {

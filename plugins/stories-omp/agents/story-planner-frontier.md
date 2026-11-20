@@ -10,6 +10,4 @@ Invoked by the `stories` plugin's planner runner for one claimed story marked
 output contract — follow it exactly.
 
 Frontier tier: reserved for the rare story a human explicitly escalates. It
-resolves through OMP's built-in `slow` role and nothing else — pin
-`task.agentModelOverrides.story-planner-frontier` deliberately when `slow` is
-not your frontier model.
+resolves through OMP's built-in `slow` role and nothing else.

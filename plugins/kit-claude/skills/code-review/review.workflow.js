@@ -7,19 +7,20 @@ export const meta = {
   ],
 }
 
-// args: { diffRef?: string, reviewDims?: {key,focus,model,effort}[], ledger?: object }
+// args: { diffRef?: string, reviewDims?: {key,focus,agent}[], ledger?: object }
 
 const diffRef = args.diffRef ?? 'main'
 const ledgerText = args.ledger ? JSON.stringify(args.ledger) : 'none'
-// Sonnet-first: measured across 6 weeks of runs, 69% of review agents return
-// zero actionable findings — Opus everywhere was paying frontier rates for
-// "LGTM". Architecture keeps Opus as the one deep-judgment safety net.
+// Sonnet-first: measured across 6 weeks of runs, 69% of review agents return zero actionable
+// findings. Architecture keeps kit-arbiter (Opus) as the one deep-judgment safety net.
+const WORKER = 'kit:kit-worker'
+const ARBITER = 'kit:kit-arbiter'
 const DIMS = args.reviewDims ?? [
-  { key: 'correctness', focus: 'logic errors, bugs, broken edge cases, race conditions', model: 'sonnet', effort: 'high' },
-  { key: 'quality', focus: 'separation of concerns, DRY, naming, error handling, maintainability', model: 'sonnet', effort: 'high' },
-  { key: 'tests', focus: 'tests verify real behavior (not mocks), edge cases covered, all passing', model: 'sonnet', effort: 'high' },
-  { key: 'security', focus: 'injection, auth, secrets, unsafe operations', model: 'sonnet', effort: 'high' },
-  { key: 'architecture', focus: 'plan/design alignment, module boundaries, sound abstractions, scalability', model: 'opus', effort: 'xhigh' },
+  { key: 'correctness', focus: 'logic errors, bugs, broken edge cases, race conditions', agent: WORKER },
+  { key: 'quality', focus: 'separation of concerns, DRY, naming, error handling, maintainability', agent: WORKER },
+  { key: 'tests', focus: 'tests verify real behavior (not mocks), edge cases covered, all passing', agent: WORKER },
+  { key: 'security', focus: 'injection, auth, secrets, unsafe operations', agent: WORKER },
+  { key: 'architecture', focus: 'plan/design alignment, module boundaries, sound abstractions, scalability', agent: ARBITER },
 ]
 
 const FINDINGS_SCHEMA = {
@@ -56,7 +57,7 @@ const VERDICT_SCHEMA = {
 const failed = []
 const stage = async (label, prompt, opts) => {
   const value = await agent(prompt, { ...opts, label })
-  if (value == null) failed.push({ id: label, error: 'did not complete (stopped in /workflows, or an unrecoverable API error)' })
+  if (value == null) failed.push({ id: label, error: 'did not complete (stopped in /workflows, or an unrecoverable API error such as a provider rate limit; if the provider refused the request, report this to the user and wait for direction)' })
   return value
 }
 
@@ -65,13 +66,13 @@ const reviewed = await pipeline(
   (d) => stage(
     `review:${d.key}`,
     `Review the diff \`git diff ${diffRef}\` for the "${d.key}" dimension: ${d.focus}.\nCross-task ledger: ${ledgerText}.\nVerify by reading the actual code. Return findings (severity critical|important|minor, with file/line/issue/fix).`,
-    { phase: 'Review', model: d.model, effort: d.effort, schema: FINDINGS_SCHEMA },
+    { phase: 'Review', agentType: d.agent, schema: FINDINGS_SCHEMA },
   ),
   (r, d) => parallel(((r && r.findings) || []).map((f, i) => () =>
     stage(
       `verify:${d.key}:${i + 1}`,
       `Adversarially check whether this ${d.key} finding is REAL (not a false positive): "${f.issue}" at ${f.file ?? '?'}:${f.line ?? '?'}. Read the code. Default to real=false if uncertain.`,
-      { phase: 'Verify', model: 'sonnet', effort: 'high', schema: VERDICT_SCHEMA },
+      { phase: 'Verify', agentType: WORKER, schema: VERDICT_SCHEMA },
     ).then((v) => ({ ...f, dimension: d.key, verified: !!(v && v.real), unverified: v == null })),
   )),
 )

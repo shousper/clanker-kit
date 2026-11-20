@@ -1,7 +1,7 @@
 {
   "name": "stories",
   "description": "Story-based autonomous workflow: markdown story board, typed verification gates, goal loop, parallel same-machine workers",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": {
     "name": "shousper"
   },

@@ -13,6 +13,3 @@ either a plan with batches or an unimplementable question.
 Routine tier: a capable planning model. Resolves through OMP's built-in `plan`
 role, then the session default — never the `task` worker tier, which follows
 plans rather than writing them.
-
-Configuration: set `task.agentModelOverrides.story-planner-routine` in OMP
-settings (or from `/agents`) to pin a different model for this agent only.

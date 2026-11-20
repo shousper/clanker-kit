@@ -108,7 +108,7 @@ function runStandardsSuite(harness: Harness) {
     for (const c of STANDARDS_CASES) {
       const units = unitsFor(c.lang, c.facet);
       it(
-        `${caseLabel(c)}: reads each standards unit once, before the first edit, blocked at most once`,
+        `${caseLabel(c)}: reads each standards unit once, before the first edit, with no block`,
         async () => {
           const reports: TrialReport[] = [];
           const outcome = await runTrials({
@@ -118,7 +118,7 @@ function runStandardsSuite(harness: Harness) {
               const report = await runTrial(harness, c, c.prompt, async ({ events, stdout, stateDir, cwd }) => {
                 const analysis = analyseStandards(harness, events, c.lang, units, { pluginRoot: harness.pluginRoot, cwd });
                 return [
-                  ...standardsViolations(analysis, c.lang, units),
+                  ...standardsViolations(analysis, c.lang, units, 0),
                   ...gateStateViolations(await readGateStates(stateDir), topLevelSessionId(harness, stdout), analysis.units),
                 ];
               });
@@ -148,7 +148,7 @@ function runStandardsSuite(harness: Harness) {
           requiredPasses: TRIALS,
           run: async () => {
             const report = await runTrial(harness, go, prompt, async ({ stdout, stateDir }) =>
-              delegationViolations(await readGateStates(stateDir), topLevelSessionId(harness, stdout), go.lang, unitsFor(go.lang, go.facet)),
+              delegationViolations(await readGateStates(stateDir), topLevelSessionId(harness, stdout), go.lang, unitsFor(go.lang, go.facet), 0),
             );
             record(reports, report, harness, `${caseLabel(go)} (subagent)`);
             return report;

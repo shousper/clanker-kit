@@ -189,9 +189,9 @@ export function createHandlers(pluginRoot: string, deps: StoriesHookDeps): Stori
         return; // A preflight failure must never block a session.
       }
       if (missing.length === 0) return;
-      const text = `stories: no model resolves for ${missing.join(", ")} — every story of that complexity will park at planning. Set task.agentModelOverrides.<agent> in OMP settings (or /agents), or populate the built-in plan/slow roles in /model → Roles.`;
-      deps.notify(text);
-      deps.sendMessage(text);
+      const summary = `stories: no model resolves for ${missing.join(", ")} — every story of that complexity will park at planning.`;
+      deps.notify(`${summary} Populate the built-in plan and slow roles in /model → Roles.`);
+      deps.sendMessage(`${summary} Report this to your human partner.`);
     },
 
     async sessionCompact(_event, ctx) {

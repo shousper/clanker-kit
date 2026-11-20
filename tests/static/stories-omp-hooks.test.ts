@@ -66,11 +66,13 @@ describe("planner model preflight", () => {
     const bad = make(["@default"]);
     await bad.handlers.sessionStart({}, { ...ctx(dir), models: bad.models });
     expect(bad.notes).toHaveLength(1);
-    expect(bad.messages).toEqual(bad.notes);
+    expect(bad.messages).toHaveLength(1);
+    expect(bad.messages[0]).toContain("story-planner-hard");
+    expect(bad.messages[0]).toContain("Report this to your human partner");
     expect(bad.notes[0]).toContain("story-planner-hard");
     expect(bad.notes[0]).toContain("story-planner-frontier");
     expect(bad.notes[0]).not.toContain("story-planner-routine");
-    expect(bad.notes[0]).toContain("task.agentModelOverrides");
+    expect(bad.notes[0]).toContain("/model → Roles");
     const good = make(["@plan", "@slow"]);
     await good.handlers.sessionStart({}, { ...ctx(dir), models: good.models });
     expect(good.notes).toEqual([]);
