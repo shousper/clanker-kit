@@ -18,7 +18,7 @@ It runs in the background: launch it, then end your turn. The completion notific
 
 ## Tiers
 
-`plan.workflow.js` pins the planner per story complexity: routine → Sonnet (effort high), hard → Opus (effort xhigh), frontier → Fable (effort xhigh). Every model decision lives in that file; nothing in this session chooses, retries, or substitutes a model.
+`plan.workflow.js` names the planner agent per story complexity: routine → `story-planner-routine` (Sonnet, high), hard → `story-planner-hard` (Opus, xhigh), frontier → `story-planner-frontier` (Fable, xhigh). Every planner decision lives in that file; nothing in this session chooses, retries, or substitutes a planner.
 
 ## kit:build-flow on this harness
 

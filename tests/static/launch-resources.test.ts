@@ -27,12 +27,11 @@ describe("plugins/kit-claude launch.md documents concrete model pinning", () => 
 });
 
 describe("plugins/kit-omp launch.md documents role-based agent selection", () => {
-  it.each(["build-flow", "code-review"])("skills/%s/launch.md never mentions Workflow( and documents kit-worker/kit-arbiter and the per-agent override", (skill) => {
+  it.each(["build-flow", "code-review"])("skills/%s/launch.md never mentions Workflow( and documents kit-worker/kit-arbiter", (skill) => {
     const text = readFileSync(resolve(KIT_OMP_ROOT, "skills", skill, "launch.md"), "utf-8");
     expect(text).not.toContain("Workflow(");
     expect(text).toContain("kit-worker");
     expect(text).toContain("kit-arbiter");
-    expect(text).toContain("task.agentModelOverrides");
   });
 });
 
@@ -62,7 +61,7 @@ describe("stories launch.md per harness", () => {
     expect(text).toMatch(/Sonnet|Opus/);
   });
 
-  it("plugins/stories-omp documents eval import/run, the planner agents, and modelRoles", () => {
+  it("plugins/stories-omp documents eval import/run, the planner agents, and their built-in roles", () => {
     const text = readFileSync(resolve(STORIES_OMP_ROOT, "skills", "work", "launch.md"), "utf-8");
     expect(text).not.toContain("Workflow(");
     expect(text).toContain("eval");
@@ -70,6 +69,6 @@ describe("stories launch.md per harness", () => {
     expect(text).toMatch(/\brun\(/);
     expect(text).toContain("story-planner-routine");
     expect(text).toContain("story-planner-frontier");
-    expect(text).toMatch(/modelRoles/);
+    expect(text).toContain("built-in");
   });
 });

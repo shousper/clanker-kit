@@ -72,15 +72,23 @@ const plannerPrompt = (s) => [
   'If the story is unimplementable as specified (contradicts the code, missing prerequisite), return `unimplementable` with a specific, answerable question INSTEAD — never a made-up plan.',
 ].join('\n')
 
+// A provider that refuses work (rate limit, overload, exhausted quota) is not fixed by a
+// relaunch or a different agent: which models to use is the user's call.
+const PROVIDER_REFUSAL = /\b(429|529)\b|rate.?limit|overloaded|quota|usage limit/i
+const REFUSAL_ADVICE = 'The model provider refused the request. Report this to the user and wait for direction.'
+
 const blocked = (reason) => ({ status: 'blocked', reason, planned: [], unimplementable: [], failed: [] })
 const errorText = (e) => (e && e.message ? e.message : String(e))
 
 // OMP raises this before the child starts when the agent's whole model chain resolves to
-// nothing. Name the agent and the override key so the parked question is actionable.
+// nothing. Name the agent so the parked question is actionable.
 const failure = (tier, e) => {
   const text = errorText(e)
   if (/no model/i.test(text)) {
-    return `no model resolves for agent ${tier} (its chain uses OMP's built-in plan/slow/default roles) — set task.agentModelOverrides.${tier} in OMP settings or populate those roles in /model → Roles, then unpark; there is no alternative-tier path`
+    return `no model resolves for agent ${tier} (its chain uses OMP's built-in plan/slow/default roles) — park the story and report this to your human partner; there is no alternative-tier path`
+  }
+  if (PROVIDER_REFUSAL.test(text)) {
+    return `planner agent did not complete: ${text}. ${REFUSAL_ADVICE} Park the story meanwhile; there is no alternative-tier path`
   }
   return `planner agent did not complete: ${text} — park the story; there is no alternative-tier path`
 }

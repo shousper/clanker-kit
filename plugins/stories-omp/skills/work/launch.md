@@ -47,11 +47,11 @@ Read the snapshot only for each story's `status` and, for `failed`, its `error`.
 
 | Complexity | Agent | Resolves through |
 |---|---|---|
-| routine | story-planner-routine | `modelRoles.plan`, then `default` |
-| hard | story-planner-hard | `modelRoles.slow`, then `plan` |
-| frontier | story-planner-frontier | `modelRoles.slow` only |
+| routine | story-planner-routine | the built-in `plan` role, then `default` |
+| hard | story-planner-hard | the built-in `slow` role, then `plan` |
+| frontier | story-planner-frontier | the built-in `slow` role only |
 
-These are OMP's built-in roles, so a fresh install resolves every planner without setup; no planner ever falls through to the `task` worker tier. Change a tier for everyone with `/model` → Roles, or override one agent via `task.agentModelOverrides.<agent-name>` (also editable from `/agents`). Nothing in this session chooses, retries, or substitutes a planner agent. A `failed` entry whose error says no model resolved is a settings problem, not a story problem: park the story with that error verbatim so your human partner sees the override key to set.
+These are OMP's built-in roles, so a fresh install resolves every planner without setup; no planner ever falls through to the `task` worker tier. Nothing in this session chooses, retries, or substitutes a planner agent. A `failed` entry whose error says no model resolved is a settings problem, not a story problem: park the story with that error verbatim and report it to your human partner.
 
 ## kit:build-flow on this harness
 

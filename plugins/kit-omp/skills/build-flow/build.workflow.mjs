@@ -38,6 +38,11 @@ const ARBITER = 'kit-arbiter'
 const VERIFIER = 'kit-verifier'
 
 const emptyLedger = () => ({ decisions: [], conventions: [], deviations: [] })
+// A provider that refuses work (rate limit, overload, exhausted quota) is not fixed by a
+// relaunch or a different agent: which models to use is the user's call.
+const PROVIDER_REFUSAL = /\b(429|529)\b|rate.?limit|overloaded|quota|usage limit/i
+const REFUSAL_ADVICE = 'The model provider refused the request. Report this to the user and wait for direction.'
+
 const errorText = (e) => (e && e.message ? e.message : String(e))
 
 function bindHost(override) {
@@ -200,8 +205,9 @@ export async function run(args, hostOverride) {
       return { ok: false, id, error: timedOut ? `still running after ${STAGE_TIMEOUT_MINUTES} min (cancelled)` : errorText(e) }
     }
   }
-  const stageFailure = (r) =>
-    `stage agent ${r.id} did not complete: ${r.error}. Read history://${r.id}, then relaunch with the same args and slug — finished stages replay from the journal.`
+  const stageFailure = (r) => PROVIDER_REFUSAL.test(r.error)
+    ? `stage agent ${r.id} did not complete: ${r.error}. ${REFUSAL_ADVICE} When they say to continue, relaunch with the same args and slug — finished stages replay from the journal.`
+    : `stage agent ${r.id} did not complete: ${r.error}. Read history://${r.id}, then relaunch with the same args and slug — finished stages replay from the journal.`
   const blocked = async (blockedAtBatch, dropFromBatch, reason, extra) => {
     for (const [label, entry] of Object.entries(journal.stages)) {
       if (!entry || typeof entry.batch !== 'number' || entry.batch >= dropFromBatch) delete journal.stages[label]

@@ -18,15 +18,14 @@ if (!Array.isArray(a) || a.length === 0) {
   return { status: 'blocked', reason: 'story-planners: args must be a non-empty array of {id, complexity, worktree, storyBody}.', planned: [], unimplementable: [], failed: [] }
 }
 
-// Complexity → model/effort. Deliberately CODE, not prose: the worker session
-// never chooses, retries, or substitutes a planner model, and no downgrade
-// branch exists anywhere in this script. An unknown complexity is a FAILURE,
-// not a fallback (complexity is CLI-validated at create/update, so this only
-// fires on a mangled args payload).
+// Complexity → planner agent. Deliberately CODE, not prose: the worker session never chooses,
+// retries, or substitutes a planner, and no downgrade branch exists anywhere in this script.
+// Each agent's frontmatter (plugins/stories-claude/agents) pins its model and effort. An
+// unknown complexity is a FAILURE, not a fallback.
 const TIER = {
-  routine: { model: 'sonnet', effort: 'high' },
-  hard: { model: 'opus', effort: 'xhigh' },
-  frontier: { model: 'fable', effort: 'xhigh' }, // human opt-in, made at board approval
+  routine: 'stories:story-planner-routine',
+  hard: 'stories:story-planner-hard',
+  frontier: 'stories:story-planner-frontier', // human opt-in, made at board approval
 }
 
 const PLAN_SCHEMA = {
@@ -77,18 +76,18 @@ const rows = (await parallel(a.map((s) => () => {
   if (!tier) {
     return Promise.resolve({ id: s.id, status: 'planner-failed', error: `unknown complexity '${s.complexity}'` })
   }
-  return agent(plannerPrompt(s), { label: `plan:${s.id}`, phase: 'Plan', model: tier.model, effort: tier.effort, schema: PLAN_SCHEMA })
+  return agent(plannerPrompt(s), { label: `plan:${s.id}`, phase: 'Plan', agentType: tier, schema: PLAN_SCHEMA })
     .then((r) => {
       if (!r) {
-        return { id: s.id, status: 'planner-failed', model: tier.model, error: 'planner agent died on a terminal error after harness retries — park the story; there is no alternative-model path' }
+        return { id: s.id, status: 'planner-failed', agent: tier, error: 'planner agent died on a terminal error after harness retries; if the model provider refused the request, report this to the user and wait for direction — park the story meanwhile; there is no alternative-model path' }
       }
       if (r.unimplementable) {
-        return { id: s.id, status: 'unimplementable', model: tier.model, question: r.unimplementable.question }
+        return { id: s.id, status: 'unimplementable', agent: tier, question: r.unimplementable.question }
       }
       if (typeof r.plan === 'string' && r.plan.trim() && Array.isArray(r.batches) && r.batches.length > 0) {
-        return { id: s.id, status: 'planned', model: tier.model, plan: r.plan, batches: r.batches }
+        return { id: s.id, status: 'planned', agent: tier, plan: r.plan, batches: r.batches }
       }
-      return { id: s.id, status: 'planner-failed', model: tier.model, error: 'planner returned neither a complete plan+batches nor an unimplementable question' }
+      return { id: s.id, status: 'planner-failed', agent: tier, error: 'planner returned neither a complete plan+batches nor an unimplementable question' }
     })
 }))).filter(Boolean)
 

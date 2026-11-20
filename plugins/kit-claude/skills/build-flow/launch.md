@@ -44,20 +44,18 @@ A `blocked` whose `reason` starts `stage agent impl:T3 did not complete` means t
 
 Background execution keeps this session live — watch progress via `/workflows` and interject anytime. To stop, `TaskStop` the workflow; relaunch with `resumeFromRunId` to resume from cached agent results (same session, and the SAME `args`: every prompt embeds the ledger, so a changed `ledger` or `startBatch` replays nothing — which is fine when `startBatch` skips those batches anyway). Small batches keep work-at-risk low.
 
-## Model & Effort
+## Stage → Agent
 
-The `Workflow` tool takes per-call `model`/`effort`, which `build.workflow.js` pins per stage:
+`build.workflow.js` names a kit agent per stage; each agent's frontmatter pins its model and effort:
 
-| Stage | Model | Effort |
-|---|---|---|
-| Implementation | Sonnet | high |
-| Spec review | Sonnet | high |
-| Quality review | Sonnet (Opus on the final batch — its cumulative diff review is the whole-run safety net) | high (xhigh on final) |
-| Fix (staged) | Sonnet → Opus | high |
-| Post-fix re-check (scoped to the findings) | Sonnet | high |
-| Final verification (full suite + lint, once per run) | Sonnet | low |
-
-These are pinned in the workflow regardless of session model.
+| Stage | Agent (model, effort) |
+|---|---|
+| Implementation | kit-worker (Sonnet, high) |
+| Spec review | kit-worker |
+| Quality review | kit-worker (kit-arbiter, Opus xhigh, on the final batch — its cumulative diff review is the whole-run safety net) |
+| Fix (staged) | kit-worker → kit-arbiter |
+| Post-fix re-check (scoped to the findings) | kit-worker |
+| Final verification (full suite + lint, once per run) | kit-verifier (Sonnet, low) |
 
 ## Additional warnings
 

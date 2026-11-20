@@ -354,6 +354,16 @@ describe("build-flow OMP runner: execution flow", () => {
 });
 
 describe("build-flow OMP runner: stage failures never throw or hang", () => {
+  it("a provider refusal blocks with advice to report to the user, not to reroute", async () => {
+    const r = await runFlow({ batches: [[task("a")]] }, (role, ctx) => {
+      if (role === "impl") throw new Error('[anthropic/claude-sonnet-5] 429 {"type":"rate_limit_error"} retry-after-ms=63061000');
+      return allClean(role, ctx);
+    });
+    expect(r.status).toBe("blocked");
+    expect(r.reason).toContain("429");
+    expect(r.reason).toContain("The model provider refused the request. Report this to the user and wait for direction");
+  });
+
   it("a rejecting wait() blocks with the agent id and keeps results and ledger", async () => {
     const r = await runFlow({ batches: [[task("a"), task("b")]] }, (role, ctx) => {
       if (role === "impl" && ctx.prompt.includes("TASKMARK:b")) throw new Error("schema_violation: missing required fields");
@@ -558,7 +568,10 @@ describe("code-review OMP runner", () => {
     };
 
     expect(result.status).toBe("partial");
-    expect(result.failed).toEqual([{ id: "review-correctness", error: "provider 429" }]);
+    expect(result.failed).toEqual([{
+      id: "review-correctness",
+      error: "provider 429. The model provider refused the request. Report this to the user and wait for direction.",
+    }]);
     expect(result.findings.map((f) => f.issue)).toEqual(["leaks a handle"]);
     expect(host.cancelled).toEqual(["review-correctness"]);
   });

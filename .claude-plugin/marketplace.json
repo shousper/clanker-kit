@@ -8,7 +8,7 @@
     {
       "name": "kit",
       "description": "Skills, hooks, and agents for a review-first development workflow",
-      "version": "1.7.0",
+      "version": "1.8.0",
       "source": "./plugins/kit-claude"
     },
     {
@@ -20,7 +20,7 @@
     {
       "name": "stories",
       "description": "Story-based autonomous workflow: markdown story board, typed verification gates, goal loop, parallel same-machine workers",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "source": "./plugins/stories-claude"
     }
   ]

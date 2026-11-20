@@ -10,5 +10,3 @@ build-flow batch. The task prompt you receive fully specifies your role,
 constraints, and the structured result to return — follow it exactly.
 
 Worker tier: a capable general coding model, used for the bulk of implementation, review, and fix work. Resolves through OMP's built-in `task` role, then the session default.
-
-Configuration: set `task.agentModelOverrides.kit-worker` in OMP settings (or from `/agents`) to pin a different model for this agent only.

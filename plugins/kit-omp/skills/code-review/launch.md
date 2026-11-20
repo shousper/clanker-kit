@@ -55,7 +55,8 @@ label to the agent id actually spawned (`history://ID` reads its transcript).
   note Minor issues for later.
 - `status === 'partial'`: at least one reviewer or verifier did not complete; `failed` lists
   `{ id, error }` per agent (`history://ID` has the transcript). The findings returned are
-  still verified, but the failed dimension is unreviewed. Say so when you report.
+  still verified, but the failed dimension is unreviewed. Say so when you report. An error that
+  says the model provider refused the request means: report it to your human partner and wait.
 - `status === 'blocked'`: the runner never started; `reason` says why (host object passed, or
   no `agent()` global because the module ran outside `eval`).
 
@@ -66,5 +67,4 @@ The default dimensions are correctness, quality, tests, security, and architectu
 (`kit-worker` by default; `kit-arbiter` for architecture, the one deep-judgment safety net).
 Reviewer agents are named `review-DIMENSION`, verifiers `verify-DIMENSION-N`. Each agent
 resolves its model through OMP's built-in roles, the same way build-flow does: `kit-worker`
-through `task`, `kit-arbiter` through `slow`. Change a tier with `/model` → Roles, or override
-one agent via `task.agentModelOverrides.<agent-name>`.
+through `task`, `kit-arbiter` through `slow`.

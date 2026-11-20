@@ -12,6 +12,3 @@ output contract — follow it exactly.
 Hard tier: the strongest reasoning model you have configured. Resolves through
 OMP's built-in `slow` role, then `plan` — never the session default or the
 `task` worker tier.
-
-Configuration: set `task.agentModelOverrides.story-planner-hard` in OMP
-settings (or from `/agents`) to pin a different model for this agent only.

@@ -16,7 +16,13 @@ export const meta = {
 const WORKER = 'kit-worker'
 const ARBITER = 'kit-arbiter'
 
+// A provider that refuses work (rate limit, overload, exhausted quota) is not fixed by a
+// relaunch or a different agent: which models to use is the user's call.
+const PROVIDER_REFUSAL = /\b(429|529)\b|rate.?limit|overloaded|quota|usage limit/i
+const REFUSAL_ADVICE = 'The model provider refused the request. Report this to the user and wait for direction.'
+
 const errorText = (e) => (e && e.message ? e.message : String(e))
+const failureText = (text) => (PROVIDER_REFUSAL.test(text) ? `${text}. ${REFUSAL_ADVICE}` : text)
 
 const FINDINGS_SCHEMA = {
   type: 'object',
@@ -106,7 +112,7 @@ export async function run(args, hostOverride) {
     try {
       handle = await agent(prompt, { ...opts, label })
     } catch (e) {
-      failed.push({ id: label, error: `spawn failed: ${errorText(e)}` })
+      failed.push({ id: label, error: failureText(`spawn failed: ${errorText(e)}`) })
       return null
     }
     const id = handle && handle.id ? handle.id : label
@@ -120,7 +126,7 @@ export async function run(args, hostOverride) {
         // already settled
       }
       const timedOut = e && e.name === 'TimeoutError'
-      failed.push({ id, error: timedOut ? `still running after ${STAGE_TIMEOUT_MINUTES} min (cancelled)` : errorText(e) })
+      failed.push({ id, error: timedOut ? `still running after ${STAGE_TIMEOUT_MINUTES} min (cancelled)` : failureText(errorText(e)) })
       return null
     }
   }

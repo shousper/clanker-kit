@@ -119,9 +119,22 @@ On OMP, `plugins/kit-omp/omp/hooks.ts` runs the same checks from the `tool_call`
 
 ## Agents
 
-| Agent | Description |
-|-------|-------------|
-| `code-reviewer` | Reviews completed project steps against plans and coding standards |
+| Agent | Plugin | Claude model | OMP role chain | Used by |
+|-------|--------|--------------|----------------|---------|
+| `kit-worker` | kit | Sonnet, high effort | `task`, then `default` | build-flow and code-review stages |
+| `kit-verifier` | kit | Sonnet, low effort | `task`, then `default` | build-flow final verification |
+| `kit-arbiter` | kit | Opus, xhigh effort | `slow`, then `default` | final-batch quality review, last-round fixes, architecture review |
+| `code-reviewer` | kit | inherits the session | inherits the session | ad hoc reviews against a plan |
+| `story-planner-routine` | stories | Sonnet, high effort | `plan`, then `default` | routine story planning |
+| `story-planner-hard` | stories | Opus, xhigh effort | `slow`, then `plan` | hard story planning |
+| `story-planner-frontier` | stories | Fable, xhigh effort | `slow` | frontier story planning |
+
+### Choosing models
+
+The workflows name an agent for each stage and never set a model per call, so each agent's own definition decides its model.
+
+- **Claude Code:** the model and effort come from the agent file in the plugin's `agents/` directory.
+- **OMP:** each agent resolves through OMP's built-in roles. To change a tier everywhere, set the role in `/model` → Roles. To change one agent, use `/agents`: it saves a per-agent override that stays in effect for future sessions until you clear it.
 
 ## Code Standards
 

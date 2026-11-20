@@ -18,7 +18,7 @@ const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
   ...args: string[]
 ) => (...a: unknown[]) => Promise<any>;
 
-type AgentOpts = { label?: string; phase?: string; model?: string; effort?: string; schema?: unknown };
+type AgentOpts = { label?: string; phase?: string; agentType?: string; model?: string; effort?: string; schema?: unknown };
 type Respond = (prompt: string, opts: AgentOpts) => unknown;
 
 interface Review {
@@ -77,18 +77,18 @@ describe("code-review runner", () => {
     ]);
   });
 
-  it("pins the architecture dimension to opus and the rest to sonnet", async () => {
+  it("runs the architecture dimension on kit-arbiter and the rest on kit-worker", async () => {
     const seen: Record<string, string | undefined> = {};
     await runReview({}, (prompt, opts) => {
-      if (isReview(prompt)) seen[opts.label!] = opts.model;
+      if (isReview(prompt)) seen[opts.label!] = opts.agentType;
       return isReview(prompt) ? { findings: [] } : { real: true };
     });
     expect(seen).toEqual({
-      "review:correctness": "sonnet",
-      "review:quality": "sonnet",
-      "review:tests": "sonnet",
-      "review:security": "sonnet",
-      "review:architecture": "opus",
+      "review:correctness": "kit:kit-worker",
+      "review:quality": "kit:kit-worker",
+      "review:tests": "kit:kit-worker",
+      "review:security": "kit:kit-worker",
+      "review:architecture": "kit:kit-arbiter",
     });
   });
 
@@ -98,6 +98,7 @@ describe("code-review runner", () => {
     );
     expect(r.status).toBe("partial");
     expect(r.failed).toEqual([{ id: "review:security", error: expect.stringMatching(/did not complete/i) }]);
+    expect(r.failed?.[0].error).toContain("report this to the user and wait for direction");
     expect(r.findings.map((f) => f.issue)).toEqual(["off-by-one"]);
   });
 

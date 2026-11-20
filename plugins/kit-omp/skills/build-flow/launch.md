@@ -137,6 +137,4 @@ per-call model or effort; the runner passes `{ agent, label, schema }`:
 
 Each agent resolves its model through OMP's built-in roles, which every install has populated:
 `kit-worker` and `kit-verifier` through `task` (then `default`); `kit-arbiter` through `slow`
-(then `default`). Change a tier for everyone with `/model` → Roles, or override one agent via
-`task.agentModelOverrides.<agent-name>` (also editable from `/agents`). The plugin ships no
-custom `modelRoles` keys, so nothing needs configuring before the first run.
+(then `default`). Nothing needs configuring before the first run.

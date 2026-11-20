@@ -29,7 +29,7 @@ type Run = {
   agentCalls: number;
 };
 
-type AgentOpts = { label?: string; phase?: string; model?: string; effort?: string; schema?: unknown };
+type AgentOpts = { label?: string; phase?: string; agentType?: string; model?: string; effort?: string; schema?: unknown };
 
 // agentImpl lets a test stand in for the implementer agent; by default any agent() call is
 // a failure, which proves the guards return BEFORE doing work.
@@ -186,7 +186,7 @@ describe("build-flow runner execution flow", () => {
     expect(r.calls.filter((c) => c.role === "spec")).toHaveLength(1);
     expect(r.calls.filter((c) => c.role === "quality")).toHaveLength(1);
     expect(r.calls.filter((c) => c.role === "recheck")).toHaveLength(1);
-    expect(r.calls.find((c) => c.role === "recheck")?.opts?.model).toBe("sonnet");
+    expect(r.calls.find((c) => c.role === "recheck")?.opts?.agentType).toBe("kit:kit-worker");
   });
 
   it("blocks when recheck findings never converge within maxFixRounds", async () => {
@@ -206,7 +206,7 @@ describe("build-flow runner execution flow", () => {
     expect(r.findings?.length).toBeGreaterThan(0);
   });
 
-  it("escalates the fix model from sonnet to opus on the final round", async () => {
+  it("escalates the fix agent from kit-worker to kit-arbiter on the final round", async () => {
     const dirty = { approved: false, findings: [{ severity: "critical", issue: "x" }] };
     const r = await runFlow(
       { batches: [[task("a")]], maxFixRounds: 2 },
@@ -217,8 +217,8 @@ describe("build-flow runner execution flow", () => {
         : clean,
     );
 
-    const fixModels = r.calls.filter((c) => c.role === "fix").map((c) => c.opts?.model);
-    expect(fixModels).toEqual(["sonnet", "opus"]);
+    const fixAgents = r.calls.filter((c) => c.role === "fix").map((c) => c.opts?.agentType);
+    expect(fixAgents).toEqual(["kit:kit-worker", "kit:kit-arbiter"]);
   });
 
   it("escalates the quality review to opus only on the final batch", async () => {
@@ -226,8 +226,18 @@ describe("build-flow runner execution flow", () => {
 
     expect(r.status).toBe("done");
     const quality = r.calls.filter((c) => c.role === "quality");
-    expect(quality.map((c) => c.opts?.model)).toEqual(["sonnet", "opus"]);
-    expect(quality.map((c) => c.opts?.effort)).toEqual(["high", "xhigh"]);
+    expect(quality.map((c) => c.opts?.agentType)).toEqual(["kit:kit-worker", "kit:kit-arbiter"]);
+  });
+
+  it("names an agent on every call and never sets a model or effort", async () => {
+    const r = await runFlow({ batches: [[task("a")], [task("b")]] }, allClean);
+
+    expect(r.calls.length).toBeGreaterThan(0);
+    for (const c of r.calls) {
+      expect(c.opts?.agentType).toBeTruthy();
+      expect(c.opts).not.toHaveProperty("model");
+      expect(c.opts).not.toHaveProperty("effort");
+    }
   });
 
   it("runs the final verification once and dispatches a verify-fix on failure", async () => {
@@ -335,6 +345,7 @@ describe("build-flow runner: a null agent() result blocks instead of passing", (
     expect(r.blockedAtBatch).toBe(0);
     expect(r.reason).toContain(label);
     expect(r.reason).toMatch(/did not complete/i);
+    expect(r.reason).toContain("report this to the user and wait for direction");
     expect(r.ledger).toBeDefined();
   });
 
